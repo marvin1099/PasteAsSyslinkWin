@@ -19,6 +19,6 @@ Run the reg file to add the entries to the context menu
 
 
 # Info
-Better documentation, automated installation and language fixes will follow soon.
-That has to do for now.
-There is also an exe version in the dist folder if you prefer (probably still requires autohokey to be installed, not testet).
+Better documentation, automated installation and language fixes will follow soon.         
+That has to do for now.         
+There is also an exe version in the dist folder if you prefer (probably still requires autohokey to be installed, not testet).         
