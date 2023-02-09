@@ -1,7 +1,7 @@
-# Sylink-Creator-Windows
+# Syslink-Creator-Windows
 Ever waned to create a syslink in windows by copying and then just right click paste as syslink. If yes this is for you.
 
-# Istalation
+# Instalation
 Download Autohotkey.      
 Direct Link: https://www.autohotkey.com/download/ahk-install.exe      
 Webside: https://www.autohotkey.com/    
