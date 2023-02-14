@@ -9,7 +9,7 @@ Webside: https://www.autohotkey.com/
 
 
 Download the script here:  
-https://codeberg.org/marvin1099/Syslink-Creator-Windows/raw/branch/main/mklinktool+installer.ahk
+https://codeberg.org/marvin1099/Syslink-Creator-Windows/raw/branch/main/mklinktool+installer.ahk  
 Run it and go throgh the promts.  
 Your done.
 
