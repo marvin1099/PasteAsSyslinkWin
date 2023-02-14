@@ -8,7 +8,9 @@ Direct Link: https://www.autohotkey.com/download/ahk-install.exe
 Webside: https://www.autohotkey.com/          
 
 
-Download the script, run it and go throgh the promts.
+Download the script here:  
+https://codeberg.org/marvin1099/Syslink-Creator-Windows/raw/branch/main/mklinktool+installer.ahk
+Run it and go throgh the promts.  
 Your done.
 
 # Info
