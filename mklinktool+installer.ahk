@@ -3,7 +3,7 @@
 SendMode Input  ; Recommended for new scripts due to its superior speed and reliability.
 SetWorkingDir %A_ScriptDir%  ; Ensures a consistent starting directory.
 StartFolder := "C:\Windows\System32"
-StartFolder := "D:\Marvin\Documents\Autohotkey\Syslink\Testinstalldir"
+;StartFolder := "D:\Marvin\Documents\Autohotkey\Syslink\Testinstalldir"
 
 DebugMessage(str)
 {
