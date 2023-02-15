@@ -13,7 +13,7 @@ On windows 10 it will appear by default.
 If you want to download the code and compile yourself  
 or run the script without compiling, you can also download it here:  
 https://codeberg.org/marvin1099/PasteAsSyslinkWin/releases  
-You will need Autohotkey if you want to compile the script directly above for yourself or run the uncompiled .ahk script directly above. 
+You will need Autohotkey if you want to compile the script for yourself or run the uncompiled .ahk script. 
 
 # Info
 Automated Instalation was now implemented, the language grammar was mostly fixed but a more complete and better documentation will follow soon.         
