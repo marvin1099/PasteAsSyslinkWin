@@ -1,5 +1,6 @@
 # PasteAsSyslinkWin
-Wouldn't it be great to copy some files and then paste then as syslink over the right click menu (context menu) like in linux, this makes it so
+Wouldn't it be great to copy some files and then paste then as syslink  
+over the right click menu (context menu) like in linux, this makes it so
 
 # Instalation
 Download the newest exe script here:  
@@ -17,5 +18,6 @@ You will need Autohotkey if you want to compile the script for yourself
 or run the uncompiled .ahk script. 
 
 # Info
-Automated Instalation was now implemented, the language grammar was mostly fixed but a more complete and better documentation will follow soon.         
+Automated Instalation was now implemented, the language grammar was mostly fixed  
+but a more complete and better documentation will follow soon.         
 That has to do for now.       
