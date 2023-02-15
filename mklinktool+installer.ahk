@@ -2,36 +2,14 @@
 ; #Warn  ; Enable warnings to assist with detecting common errors.
 SendMode Input  ; Recommended for new scripts due to its superior speed and reliability.
 SetWorkingDir %A_ScriptDir%  ; Ensures a consistent starting directory.
-StartFolder := "C:\Windows\System32"
-;StartFolder := "D:\Marvin\Documents\Autohotkey\Syslink\Testinstalldir"
-
-DebugMessage(str)
-{
- global h_stdout
- DebugConsoleInitialize()  ; start console window if not yet started
- str .= "`n" ; add line feed
- DllCall("WriteFile", "uint", h_Stdout, "uint", &str, "uint", StrLen(str), "uint*", BytesWritten, "uint", NULL) ; write into the console
- WinSet, Bottom,, ahk_id %h_stout%  ; keep console on bottom
-}
-
-DebugConsoleInitialize()
-{
-   global h_Stdout     ; Handle for console
-   static is_open = 0  ; toogle whether opened before
-   if (is_open = 1)     ; yes, so don't open again
-     return
-	 
-   is_open := 1	
-   ; two calls to open, no error check (it's debug, so you know what you are doing)
-   DllCall("AttachConsole", int, -1, int)
-   DllCall("AllocConsole", int)
-
-   dllcall("SetConsoleTitle", "str","Paddy Debug Console")    ; Set the name. Example. Probably could use a_scriptname here 
-   h_Stdout := DllCall("GetStdHandle", "int", -11) ; get the handle
-   WinSet, Bottom,, ahk_id %h_stout%      ; make sure it's on the bottom
-   WinActivate,Lightroom   ; Application specific; I need to make sure this application is running in the foreground. YMMV
-   return
-}
+basename := "mklinktool"
+allowdirpathfallback := False
+if A_IsCompiled
+    StartFolder := "C:\Windows\System32"
+else
+    StartFolder := A_MyDocuments . "\Mklinktool"
+if not InStr(FileExist(StartFolder), "D")
+    FileCreateDir, %StartFolder%
 
 GoAdmin(Taskinfo,In:=True)
 {
@@ -317,7 +295,7 @@ JoinAr(JArr,sep:=" , ",RmSp:=False)
 
 ;DebugMessage("`n Hello this is a test")
 
-base := "\mklinktool"
+base := "\" . basename
 if A_IsCompiled
     exe := ".exe"
 else
@@ -477,6 +455,22 @@ else
     Paths := StrSplit(Pathfinder(FArr,WildLoop), "`n`n",, 2)
     FPaths := StrSplit(Paths[1],"`n"," `r")
     DPaths := StrSplit(Paths[2],"`n"," `r")
+    if (DPaths.Length() < 1)
+    {
+        WinGetClass, class, A
+        if (class = "CabinetWClass" and allowdirpathfallback) 
+        {
+            explorerHwnd := WinActive("ahk_class CabinetWClass")
+            if (explorerHwnd)
+                for window in ComObjCreate("Shell.Application").Windows
+                    if (window.hwnd==explorerHwnd)
+                    {
+                        paopen := window.Document.Folder.Self.Path
+                        if InStr(FileExist(paopen), "D")
+                            DPaths.Push(paopen)
+                    }   
+        }
+    }
     if (DPaths.Length() < 1 or (FPaths.Length() < 1 and DPaths.Length() < 2)) and (List[4] = "")
     {
         MsgBox,, SysLinkTool, Error`nAt least 1 valid folder and 1 valid path is required`nto drop the selcted files into as syslinks`nand for the selcted files iteself`nExiting in 10 Secs, 10
