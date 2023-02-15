@@ -1,15 +1,9 @@
 # Syslink-Creator-Windows
-Ever waned to create a syslink in windows by copying and then just right click paste as syslink. If yes this is for you.
+Wouldn't it be great to copy some files and then paste then as syslink over the right click menu (context menu) like in linux, this makes it so
 
 # Instalation
-Download Autohotkey if you want to run the ahk file.  
-For the exe file you don't need Autohotkey.   
-Direct Link: https://www.autohotkey.com/download/ahk-install.exe      
-Webside: https://www.autohotkey.com/          
-
-
 Download the script here:  
-https://codeberg.org/marvin1099/Syslink-Creator-Windows/raw/branch/main/mklinktool+installer.ahk  
+https://codeberg.org/marvin1099/PasteAsSyslinkWin/src/branch/main/mklinktool+installer.ahk  
 Run it and go throgh the promts.  
 Your done.
 
