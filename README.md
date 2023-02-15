@@ -1,6 +1,6 @@
 # PasteAsSyslinkWin
 Wouldn't it be great to copy some files and then paste then as syslink  
-over the right click menu (context menu) like in linux, this makes it so.
+with the right click menu (context menu) like in linux, this makes it so.
 
 # Instalation
 Download the newest exe script here:  
