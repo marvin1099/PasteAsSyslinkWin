@@ -1,6 +1,6 @@
 [project]
 name = "paste-as-symlink-win"
-version = "2.0.0"
+version = "0.9"
 description = "Create symlinks by copying and pasting files/folders via CLI or right-click context menu"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -8,9 +8,6 @@ requires-python = ">=3.10"
 authors = [{ name = "marvin1099" }]
 
 [project.scripts]
-mklinktool = "src.main:main"
-
-[project.gui-scripts]
 mklinktool = "src.main:main"
 
 [build-system]
@@ -32,5 +29,7 @@ quote-style = "double"
 
 [dependency-groups]
 dev = [
+    "pyinstaller>=6.21.0",
+    "pytest>=9.1.1",
     "ruff>=0.15.22",
 ]

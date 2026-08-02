@@ -1,4 +1,4 @@
-"""Windows context menu registration for Win10 and Win11."""
+"""Windows context menu registration (classic context menu)."""
 
 import contextlib
 import os
@@ -12,8 +12,9 @@ def _exe_command(exe_path: str) -> str:
     """Build the shell command string for the context menu."""
     if getattr(sys, "frozen", False):
         return f'"{exe_path}"'
-    python_exe = sys.executable
-    return f'"{python_exe}" "{exe_path}"'
+    if os.path.splitext(exe_path)[1].lower() == ".py":
+        return f'"{sys.executable}" "{exe_path}"'
+    return f'"{exe_path}"'
 
 
 def _get_icon_path(exe_path: str) -> str:
@@ -26,12 +27,31 @@ def _get_icon_path(exe_path: str) -> str:
     return exe_path
 
 
-def add_context_menu_win10(exe_path: str, file_opts: str = "", folder_opts: str = "") -> None:
-    r"""Add context menu entries for Windows 10 (classic context menu).
+def _write_entry(
+    root, subkey: str, label: str, ico: str, cmd: str, full_opts: str
+) -> bool:
+    """Write one context menu entry under ``root``. Returns True on success."""
+    try:
+        key = winreg.CreateKeyEx(root, subkey, 0, winreg.KEY_ALL_ACCESS)
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, label)
+        winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, ico)
+        winreg.CloseKey(key)
 
-    Registers under:
-        HKCR\Directory\shell\SysLink
-        HKCR\Directory\Background\shell\SysLink
+        cmd_key = winreg.CreateKeyEx(root, f"{subkey}\\command", 0, winreg.KEY_ALL_ACCESS)
+        winreg.SetValueEx(cmd_key, None, 0, winreg.REG_SZ, f'{cmd} {full_opts}"%V"')
+        winreg.CloseKey(cmd_key)
+        return True
+    except OSError:
+        return False
+
+
+def add_context_menu(exe_path: str, file_opts: str = "", folder_opts: str = "") -> None:
+    r"""Add context menu entries to the classic context menu.
+
+    Tries machine-wide first (HKCR, requires admin), falling back to the
+    current user's classes view (HKCU\Software\Classes, no admin needed).
+
+    Note: On Windows 11 the classic menu appears via "Show more options".
     """
     icon = _get_icon_path(exe_path)
     cmd = _exe_command(exe_path)
@@ -40,112 +60,31 @@ def add_context_menu_win10(exe_path: str, file_opts: str = "", folder_opts: str 
         full_opts = full_opts + " "
 
     entries = [
-        (winreg.HKEY_CLASSES_ROOT, r"Directory\shell\SysLink", "Create Symlinks Here", icon),
-        (
-            winreg.HKEY_CLASSES_ROOT,
-            r"Directory\Background\shell\SysLink",
-            "Create Symlinks Here",
-            icon,
-        ),
+        (r"Directory\shell\SysLink", "Create Symlinks Here", icon),
+        (r"Directory\Background\shell\SysLink", "Create Symlinks Here", icon),
     ]
 
-    for root, subkey, label, ico in entries:
-        try:
-            key = winreg.CreateKeyEx(root, subkey, 0, winreg.KEY_ALL_ACCESS)
-            winreg.SetValueEx(key, None, 0, winreg.REG_SZ, label)
-            winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, ico)
-            winreg.CloseKey(key)
-
-            cmd_key = winreg.CreateKeyEx(root, f"{subkey}\\command", 0, winreg.KEY_ALL_ACCESS)
-            winreg.SetValueEx(cmd_key, None, 0, winreg.REG_SZ, f'{cmd} {full_opts}"%V"')
-            winreg.CloseKey(cmd_key)
-        except OSError:
-            pass
+    for subkey, label, ico in entries:
+        for root in (winreg.HKEY_CLASSES_ROOT, winreg.HKEY_CURRENT_USER):
+            full_subkey = (
+                subkey if root is winreg.HKEY_CLASSES_ROOT else "Software\\Classes\\" + subkey
+            )
+            if _write_entry(root, full_subkey, label, ico, cmd, full_opts):
+                break
 
 
-def add_context_menu_win11(exe_path: str, file_opts: str = "", folder_opts: str = "") -> None:
-    """Add a modern Windows 11 context menu entry via CLSID registration.
-
-    This adds a "Direct" entry that appears in the Win11 context menu directly,
-    plus a "Show more options" fallback for Win10 compatibility.
-    """
-    icon = _get_icon_path(exe_path)
-    cmd = _exe_command(exe_path)
-    full_opts = f"{file_opts} {folder_opts}".strip()
-    if full_opts:
-        full_opts = full_opts + " "
-
-    clsid = "{8ECA9B20-A7C9-4D6B-B2C5-3B5B8E5C1234}"
-    menu_text = "Create Symlinks Here"
-
-    try:
-        base_key = winreg.CreateKeyEx(
-            winreg.HKEY_CLASSES_ROOT, f"CLSID\\{clsid}\\InprocServer32", 0, winreg.KEY_ALL_ACCESS
-        )
-        winreg.SetValueEx(base_key, None, 0, winreg.REG_SZ, "")
-        winreg.SetValueEx(base_key, "ThreadingModel", 0, winreg.REG_SZ, "Both")
-        winreg.CloseKey(base_key)
-
-        shell_key = winreg.CreateKeyEx(
-            winreg.HKEY_CLASSES_ROOT, f"CLSID\\{clsid}\\shell", 0, winreg.KEY_ALL_ACCESS
-        )
-        winreg.SetValueEx(shell_key, None, 0, winreg.REG_SZ, menu_text)
-        winreg.CloseKey(shell_key)
-
-        cmd_key = winreg.CreateKeyEx(
-            winreg.HKEY_CLASSES_ROOT,
-            f"CLSID\\{clsid}\\shell\\open\\command",
-            0,
-            winreg.KEY_ALL_ACCESS,
-        )
-        winreg.SetValueEx(cmd_key, None, 0, winreg.REG_SZ, f'{cmd} {full_opts}"%V"')
-        winreg.CloseKey(cmd_key)
-
-        icon_key = winreg.CreateKeyEx(
-            winreg.HKEY_CLASSES_ROOT, f"CLSID\\{clsid}", 0, winreg.KEY_ALL_ACCESS
-        )
-        winreg.SetValueEx(icon_key, "Icon", 0, winreg.REG_SZ, icon)
-        winreg.CloseKey(icon_key)
-    except OSError:
-        pass
-
-
-def remove_context_menu_win10() -> None:
-    """Remove Win10 context menu entries."""
+def remove_context_menu() -> None:
+    """Remove classic context menu entries (machine-wide and per-user)."""
     keys = [
         r"Directory\shell\SysLink",
         r"Directory\Background\shell\SysLink",
     ]
-    for subkey in keys:
-        with contextlib.suppress(OSError):
-            winreg.DeleteKeyEx(
-                winreg.HKEY_CLASSES_ROOT, f"{subkey}\\command", 0, winreg.KEY_ALL_ACCESS
+    for root in (winreg.HKEY_CLASSES_ROOT, winreg.HKEY_CURRENT_USER):
+        for subkey in keys:
+            full_subkey = (
+                subkey if root is winreg.HKEY_CLASSES_ROOT else "Software\\Classes\\" + subkey
             )
-        with contextlib.suppress(OSError):
-            winreg.DeleteKeyEx(winreg.HKEY_CLASSES_ROOT, subkey, 0, winreg.KEY_ALL_ACCESS)
-
-
-def remove_context_menu_win11() -> None:
-    """Remove Win11 context menu entries."""
-    clsid = "{8ECA9B20-A7C9-4D6B-B2C5-3B5B8E5C1234}"
-    paths = [
-        f"CLSID\\{clsid}\\shell\\open\\command",
-        f"CLSID\\{clsid}\\shell\\open",
-        f"CLSID\\{clsid}\\shell",
-        f"CLSID\\{clsid}\\InprocServer32",
-        f"CLSID\\{clsid}",
-    ]
-    for subkey in paths:
-        with contextlib.suppress(OSError):
-            winreg.DeleteKeyEx(winreg.HKEY_CLASSES_ROOT, subkey, 0, winreg.KEY_ALL_ACCESS)
-
-
-def detect_windows_version() -> int:
-    """Detect Windows version. Returns 11+ or 10."""
-    try:
-        ver = sys.getwindowsversion()
-        if ver.major >= 10 and ver.build >= 22000:
-            return 11
-        return 10
-    except Exception:
-        return 10
+            with contextlib.suppress(OSError):
+                winreg.DeleteKeyEx(root, f"{full_subkey}\\command")
+            with contextlib.suppress(OSError):
+                winreg.DeleteKeyEx(root, full_subkey)

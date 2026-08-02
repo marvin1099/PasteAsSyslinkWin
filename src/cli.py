@@ -1,43 +1,52 @@
 """CLI argument parsing and flag processing."""
 
-VALID_FLAGS = {"/f", "/d", "/h", "/j", "/w", "/m", "/u", "/r", "/e"}
+import re
+from pathlib import PureWindowsPath
+
+# Each flag maps to exactly one operation:
+#   /f = file symlink (mklink default, no flag needed)
+#   /d = dir symlink  (mklink /d)
+#   /h = file hardlink (mklink /h)
+#   /j = dir junction  (mklink /j)
+VALID_FLAGS = {
+    "/f", "/d", "/h", "/j", "/w", "/m", "/u", "/i",
+    "/install", "/uninstall", "/clip", "/noclip",
+}
+
+# Shell metacharacters that could enable injection via cmd /c mklink.
+# Only characters that stay dangerous even inside list2cmdline quotes are
+# blocked: `|`, `<`, `>` are cmd operators, `^` escapes even when quoted,
+# `"` breaks quoting. `&` and backtick are inert inside double quotes and
+# are valid Windows filename characters, so they are allowed.
+_SHELL_METACHARACTERS = re.compile(r'[|<>^"\x00\r\n]')
 
 
-def parse_flags(args: list[str], filter_mode: str = "") -> dict:
+def parse_flags(args: list[str]) -> dict:
     """Parse mklink-style flags into a structured result.
 
-    /f and /d are MODE SWITCHERS that control whether subsequent flags
-    apply to files or folders. They are NOT passed to mklink directly.
-    Only /h and /j are actual mklink flags.
+    Each flag maps to exactly one operation:
+        /f → file symlink    /d → dir symlink
+        /h → file hardlink   /j → dir junction
+    /w and /m control wildcard expansion, /u and /r control install mode,
+    /clip and /noclip control clipboard usage.
 
     Args:
         args: List of flag strings (e.g. ["/f", "/h", "/d", "/j"]).
-        filter_mode: If "/e", detect admin-required operations.
-                     Empty for normal operation.
 
     Returns:
         Dict with keys:
-            file_flags: mklink flags for file operations (e.g. ["/h"])
-            folder_flags: mklink flags for folder operations (e.g. ["/d", "/j"])
+            file_flags: operation flags for files (e.g. ["/f", "/h"])
+            folder_flags: operation flags for folders (e.g. ["/d", "/j"])
             wildcard: bool or None
             install_mode: True (uninstall), False (re-add), None (normal)
-            admin_file_flags: admin-required file flags (only when filter_mode="/e")
-            admin_folder_flags: admin-required folder flags (only when filter_mode="/e")
     """
     result = {
         "file_flags": [],
         "folder_flags": [],
         "wildcard": None,
         "install_mode": None,
-        "admin_file_flags": [],
-        "admin_folder_flags": [],
+        "clip": None,
     }
-
-    is_file_mode = True
-    is_admin_detect = filter_mode == "/e"
-
-    track_admin_files = [] if is_admin_detect else None
-    track_admin_folders = [] if is_admin_detect else None
 
     for arg in args:
         flag = arg.strip().lower()
@@ -45,68 +54,103 @@ def parse_flags(args: list[str], filter_mode: str = "") -> dict:
             continue
 
         if flag == "/f":
-            is_file_mode = True
-            if is_admin_detect and track_admin_files is not None:
-                track_admin_files.append("/f")
-
+            result["file_flags"].append("/f")
         elif flag == "/d":
-            is_file_mode = False
-            if is_admin_detect and track_admin_folders is not None:
-                track_admin_folders.append("/d")
-
+            result["folder_flags"].append("/d")
         elif flag == "/h":
-            if is_file_mode:
-                result["file_flags"].append("/h")
-                if is_admin_detect and track_admin_files is not None:
-                    track_admin_files.append("/h")
-            else:
-                result["folder_flags"].append("/h")
-                if is_admin_detect and track_admin_folders is not None:
-                    track_admin_folders.append("/h")
-
+            result["file_flags"].append("/h")
         elif flag == "/j":
             result["folder_flags"].append("/j")
-            if is_admin_detect and track_admin_folders is not None:
-                track_admin_folders.append("/j")
-
         elif flag == "/w":
             result["wildcard"] = True
-
         elif flag == "/m":
             result["wildcard"] = False
-
-        elif flag == "/u":
+        elif flag == "/u" or flag == "/uninstall":
             result["install_mode"] = True
-
-        elif flag == "/r":
+        elif flag == "/i" or flag == "/install":
             result["install_mode"] = False
-
-    if is_admin_detect:
-        admin_file_flags = []
-        admin_folder_flags = []
-        if track_admin_files and len(track_admin_files) >= 2:
-            admin_file_flags = [f for f in track_admin_files if f != "/f"]
-            if not admin_file_flags:
-                admin_file_flags = ["/f"]
-        if track_admin_folders and len(track_admin_folders) >= 2:
-            admin_folder_flags = [f for f in track_admin_folders if f != "/d"]
-            if not admin_folder_flags:
-                admin_folder_flags = ["/d"]
-        result["admin_file_flags"] = admin_file_flags
-        result["admin_folder_flags"] = admin_folder_flags
+        elif flag == "/clip":
+            result["clip"] = True
+        elif flag == "/noclip":
+            result["clip"] = False
 
     return result
 
 
+def parse_admin_opts(opts_str: str) -> list[str]:
+    """Parse admin opts string into a list of flags that need elevation.
+
+    Admin opts are operation flags (/f, /h, /d, /j).
+    """
+    return [f for f in opts_str.split() if f in {"/f", "/h", "/d", "/j"}]
+
+
 def build_file_flags(result: dict) -> str:
-    """Build mklink flag string for file operations (no /f prefix)."""
-    flags = result["file_flags"]
-    return " ".join(flags) if flags else ""
+    """Build mklink flag string for file operations.
+
+    /f (file symlink) → "" (mklink default = file symlink)
+    /h (file hardlink) → "/h"
+    """
+    return "/h" if "/h" in result["file_flags"] else ""
 
 
 def build_folder_flags(result: dict) -> str:
-    """Build mklink flag string for folder operations (includes /d prefix)."""
+    """Build mklink flag string for folder operations.
+
+    /d (dir symlink) → "/d"
+    /j (dir junction) → "/j"
+    /j implies directory so /d is not prepended when /j is present.
+    Default (no folder flags) → "/d" (dir symlink).
+    """
     flags = result["folder_flags"]
-    other = [f for f in flags if f != "/d"]
-    parts = ["/d"] + other
-    return " ".join(parts)
+    if "/j" in flags:
+        return "/j"
+    return "/d"
+
+
+def validate_path(path: str) -> str | None:
+    """Check a path for validity and shell injection characters.
+
+    Returns the path if safe, or None if invalid.
+    Uses PureWindowsPath for structural validation, then rejects
+    shell metacharacters (& | < > ^ ` " etc.) that could enable
+    injection via cmd /c mklink.
+    """
+    if not path:
+        return None
+    try:
+        p = PureWindowsPath(path)
+        if p.drive and not p.root:
+            return None
+    except (ValueError, OSError):
+        return None
+    if _SHELL_METACHARACTERS.search(path):
+        return None
+    return path
+
+
+def validate_args(args: list[str]) -> tuple[list[str], list[str]]:
+    """Validate all arguments: flags must be valid, paths must be safe.
+
+    Returns:
+        (valid_flags, valid_paths) — lists of validated arguments.
+        Invalid args are silently dropped.
+    """
+    flags = []
+    paths = []
+    for arg in args:
+        arg_stripped = arg.strip()
+        if not arg_stripped:
+            continue
+        # A forward-slash UNC path (//server/share) must not be mistaken for
+        # a flag just because it starts with "/".
+        if arg_stripped.startswith("//"):
+            if validate_path(arg_stripped) is not None:
+                paths.append(arg_stripped)
+        elif arg_stripped.startswith("/"):
+            if arg_stripped.lower() in VALID_FLAGS:
+                flags.append(arg_stripped)
+        else:
+            if validate_path(arg_stripped) is not None:
+                paths.append(arg_stripped)
+    return flags, paths

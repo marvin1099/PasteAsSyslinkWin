@@ -82,11 +82,3 @@ def remove_from_path(directory: str, all_users: bool = False) -> bool:
         return True
     except OSError:
         return False
-
-
-def is_in_path(directory: str, all_users: bool = False) -> bool:
-    """Check if a directory is already in PATH."""
-    directory = directory.rstrip("\\").lower()
-    hive = winreg.HKEY_LOCAL_MACHINE if all_users else winreg.HKEY_CURRENT_USER
-    current = _read_path(hive)
-    return any(e.rstrip("\\").lower() == directory for e in current.split(";") if e.strip())

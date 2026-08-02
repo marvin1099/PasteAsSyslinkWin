@@ -6,7 +6,6 @@ from ctypes import c_void_p, c_wchar_p, windll
 
 CF_HDROP = 15
 CF_UNICODETEXT = 13
-GHND = 0x0042
 
 user32 = windll.user32
 kernel32 = windll.kernel32
@@ -18,6 +17,13 @@ user32.CloseClipboard.argtypes = []
 user32.CloseClipboard.restype = wintypes.BOOL
 user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
 user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+user32.GetClipboardData.argtypes = [wintypes.UINT]
+user32.GetClipboardData.restype = c_void_p
+
+kernel32.GlobalLock.argtypes = [c_void_p]
+kernel32.GlobalLock.restype = c_void_p
+kernel32.GlobalUnlock.argtypes = [c_void_p]
+kernel32.GlobalUnlock.restype = wintypes.BOOL
 
 shell32.DragQueryFileW.argtypes = [c_void_p, wintypes.UINT, c_wchar_p, wintypes.UINT]
 shell32.DragQueryFileW.restype = wintypes.UINT
@@ -46,7 +52,10 @@ def get_clipboard_files() -> list[str]:
 
 
 def get_clipboard_text() -> list[str]:
-    """Extract text lines from clipboard (text copy of paths)."""
+    """Extract text lines from clipboard (text copy of paths).
+
+    Strips surrounding quotes and filters empty lines.
+    """
     lines = []
     if not user32.OpenClipboard(0):
         return lines
@@ -63,7 +72,7 @@ def get_clipboard_text() -> list[str]:
             text = c_wchar_p(ptr).value
             if text:
                 for line in text.splitlines():
-                    line = line.strip()
+                    line = line.strip().strip('"').strip("'")
                     if line:
                         lines.append(line)
         finally:

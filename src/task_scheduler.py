@@ -21,28 +21,61 @@ def task_exists(basename: str) -> bool:
 
 
 def create_task(basename: str, exe_path: str) -> bool:
-    """Create an ONCE task with HIGHEST run level for auto-elevation."""
+    """Create a task with no triggers and HIGHEST run level.
+
+    The task has no auto-trigger; it is only started via run_task(). The
+    task is marked Hidden so it is not shown in the Task Scheduler UI, and
+    running it does not flash a console window.
+    """
     name = _task_name(basename)
-    result = subprocess.run(
-        [
-            "schtasks",
-            "/Create",
-            "/SC",
-            "ONCE",
-            "/ST",
-            "00:00",
-            "/F",
-            "/RL",
-            "HIGHEST",
-            "/TN",
-            name,
-            "/TR",
-            f'"{exe_path}"',
-        ],
-        capture_output=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    return result.returncode == 0
+    xml = f"""\
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>PasteAsSyslinkWin privilege elevation</Description>
+  </RegistrationInfo>
+  <Triggers />
+  <Principals>
+    <Principal>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"{exe_path}"</Command>
+    </Exec>
+  </Actions>
+</Task>"""
+    temp_dir = tempfile.gettempdir()
+    xml_path = os.path.join(temp_dir, f"{basename}_task.xml")
+    try:
+        with open(xml_path, "w", encoding="utf-16") as f:
+            f.write(xml)
+        result = subprocess.run(
+            ["schtasks", "/Create", "/F", "/TN", name, "/XML", xml_path],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return result.returncode == 0
+    finally:
+        if os.path.exists(xml_path):
+            os.remove(xml_path)
 
 
 def run_task(basename: str) -> bool:
@@ -72,6 +105,15 @@ def delete_task(basename: str) -> bool:
     return result.returncode == 0
 
 
+def write_port_file(basename: str, port: int) -> str:
+    """Write the writeback port marker for the elevated task to read."""
+    temp_dir = tempfile.gettempdir()
+    port_file = os.path.join(temp_dir, f"{basename}.port")
+    with open(port_file, "w", encoding="utf-8") as f:
+        f.write(str(port) + "\n")
+    return port_file
+
+
 def write_args_file(basename: str, args: list[str]) -> str:
     """Write arguments to temp file for the elevated task to read. Returns path."""
     temp_dir = tempfile.gettempdir()
@@ -95,8 +137,9 @@ def read_args_file(basename: str) -> list[str]:
 
 
 def delete_args_file(basename: str) -> None:
-    """Clean up the temp argument file."""
+    """Clean up the temp argument and port-marker files."""
     temp_dir = tempfile.gettempdir()
-    arg_file = os.path.join(temp_dir, f"{basename}.args.temp")
-    if os.path.exists(arg_file):
-        os.remove(arg_file)
+    for name in (f"{basename}.args.temp", f"{basename}.port"):
+        path = os.path.join(temp_dir, name)
+        if os.path.exists(path):
+            os.remove(path)

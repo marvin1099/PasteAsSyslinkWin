@@ -1,23 +1,97 @@
 """Symlink creation with conflict resolution dialog."""
 
-import ctypes
 import os
+import secrets
 import subprocess
 import tkinter as tk
 
-MKLINK_FLAG_MAP = {
-    "file_symlink": "/f",
-    "file_hardlink": "/f /h",
-    "dir_symlink": "/d",
-    "dir_junction": "/d /j",
-}
+PROBE_PREFIX = ".mklinktool_probe_"
+PROBE_SUFFIX = ".tmp"
 
 
-def _is_admin() -> bool:
+def create_write_probe(dest_dir: str) -> str | None:
+    """Create a write-proof probe file inside ``dest_dir``.
+
+    The probe is created by the *unprivileged* caller and left in place so
+    the elevated process can verify it before acting. Because the file can
+    only exist when the caller could genuinely write to the destination, a
+    silent (task-scheduler) elevation is only safe when the probe verifies.
+
+    Args:
+        dest_dir: Directory to probe.
+
+    Returns:
+        Full path of the created probe, or None when the directory is
+        missing or not writable.
+    """
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return None
+    token = secrets.token_hex(8)
+    probe = os.path.join(dest_dir, f"{PROBE_PREFIX}{token}{PROBE_SUFFIX}")
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except Exception:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write(token)
+        return probe
+    except OSError:
+        return None
+
+
+def verify_write_probe(dest_dir: str, probe_path: str) -> bool:
+    """Verify a write-probe file and remove it.
+
+    Returns True only when the file sits directly inside ``dest_dir``, its
+    name has the expected prefix/suffix, and its content matches the token
+    encoded in the name (i.e. it was produced by create_write_probe). The
+    dest_dir check prevents an attacker from pointing at a probe they can
+    write while the operation targets a protected folder.
+
+    Args:
+        dest_dir: The destination directory that must contain the probe.
+        probe_path: Full path of the probe to verify.
+    """
+    if not dest_dir or not probe_path:
         return False
+    if os.path.normcase(os.path.dirname(probe_path)) != os.path.normcase(
+        os.path.normpath(dest_dir)
+    ):
+        return False
+    name = os.path.basename(probe_path)
+    if not (name.startswith(PROBE_PREFIX) and name.endswith(PROBE_SUFFIX)):
+        return False
+    token = name[len(PROBE_PREFIX) : -len(PROBE_SUFFIX)]
+    try:
+        with open(probe_path, encoding="utf-8") as f:
+            if f.read().strip() != token:
+                return False
+        os.remove(probe_path)
+        return True
+    except OSError:
+        return False
+
+
+def remove_probe_files(dest_dir: str) -> int:
+    """Remove leftover probe files in ``dest_dir`` (crash cleanup).
+
+    Args:
+        dest_dir: Directory to scan.
+
+    Returns:
+        Number of probe files removed.
+    """
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return 0
+    removed = 0
+    try:
+        for name in os.listdir(dest_dir):
+            if name.startswith(PROBE_PREFIX) and name.endswith(PROBE_SUFFIX):
+                try:
+                    os.remove(os.path.join(dest_dir, name))
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return removed
 
 
 def create_symlink(source: str, dest: str, flags: str) -> bool:
@@ -32,9 +106,9 @@ def create_symlink(source: str, dest: str, flags: str) -> bool:
         True on success, False on failure.
     """
     flag_parts = flags.strip().split()
-    cmd_parts = ["cmd", "/c", "mklink"] + flag_parts + [f'"{dest}"', f'"{source}"']
+    cmd_parts = ["cmd", "/c", "mklink"] + flag_parts + [dest, source]
     result = subprocess.run(
-        " ".join(cmd_parts),
+        subprocess.list2cmdline(cmd_parts),
         capture_output=True,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
@@ -94,13 +168,20 @@ class ConflictDialog:
         scrollbar = tk.Scrollbar(list_frame)
         scrollbar.pack(side="right", fill="y")
 
-        self.listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=("Consolas", 9))
+        self.listbox = tk.Listbox(
+            list_frame, yscrollcommand=scrollbar.set,
+            font=("Consolas", 9), selectmode="single",
+        )
         self.listbox.pack(fill="both", expand=True)
         scrollbar.config(command=self.listbox.yview)
 
         for src, _dst, is_dir in self.items:
             kind = "folder" if is_dir else "file"
             self.listbox.insert("end", f"[{kind}] {os.path.basename(src)}")
+
+        if self.items:
+            self.listbox.select_set(0)
+            self.listbox.see(0)
 
         action_frame = tk.Frame(self.root)
         action_frame.pack(fill="x", padx=12, pady=8)
@@ -143,7 +224,7 @@ class ConflictDialog:
 
         self.status_label = tk.Label(
             btn_frame,
-            text=f"0 / {len(self.items)} resolved",
+            text=f"1 / {len(self.items)} resolved",
             fg="gray",
         )
         self.status_label.pack(side="right")
@@ -153,8 +234,8 @@ class ConflictDialog:
 
     def _choose(self, action: str):
         if self.apply_to_all:
-            for src, _, _ in self.items:
-                self.results[src] = action
+            for _, dst, _ in self.items:
+                self.results[dst] = action
             self.root.destroy()
             return
 
@@ -162,13 +243,18 @@ class ConflictDialog:
         if selected:
             idx = selected[0]
             if idx < len(self.items):
-                src = self.items[idx][0]
-                self.results[src] = action
+                _, dst, _ = self.items[idx]
+                self.results[dst] = action
                 self.listbox.delete(idx)
                 self.items.pop(idx)
                 resolved = len(self.results)
                 total = resolved + len(self.items)
                 self.status_label.config(text=f"{resolved} / {total} resolved")
+
+                if self.items:
+                    next_idx = min(idx, len(self.items) - 1)
+                    self.listbox.select_set(next_idx)
+                    self.listbox.see(next_idx)
 
         if not self.items:
             self.root.destroy()
@@ -181,7 +267,7 @@ def resolve_conflicts(items: list[tuple[str, str, bool]]) -> dict[str, str]:
         items: List of (source, dest, is_dir) for items that conflict.
 
     Returns:
-        Dict mapping source path to action ("overwrite", "rename", "skip").
+        Dict mapping destination path to action ("overwrite", "rename", "skip").
     """
     if not items:
         return {}

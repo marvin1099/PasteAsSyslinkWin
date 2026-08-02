@@ -7,15 +7,6 @@ import os
 class Config:
     """Manages the tool's INI configuration file."""
 
-    DEFAULTS = {
-        "task": "True",
-        "wildcardloops": "False",
-        "scriptdefaultfileoptions": "/f",
-        "scriptdefaultfolderoptions": "/d /j",
-        "adminfileoptions": "/f /h",
-        "adminfolderoptions": "/d /h /j",
-    }
-
     def __init__(self, install_dir: str, basename: str = "mklinktool"):
         self.install_dir = install_dir
         self.basename = basename
@@ -26,9 +17,10 @@ class Config:
         self.task: bool = True
         self.wildcard_loops: bool = False
         self.script_default_file_opts: str = "/f"
-        self.script_default_folder_opts: str = "/d /j"
+        self.script_default_folder_opts: str = "/j"
         self.admin_file_opts: str = "/f /h"
-        self.admin_folder_opts: str = "/d /h /j"
+        self.admin_folder_opts: str = "/d"
+        self.admin_free: bool = False
         self.all_users: bool = False
 
     def exists(self) -> bool:
@@ -46,15 +38,22 @@ class Config:
         self.wildcard_loops = (
             self._parser.get("settings", "wildcardloops", fallback="False").lower() == "true"
         )
-        self.script_default_file_opts = self._parser.get(
+
+        file_opts = self._parser.get(
             "settings", "scriptdefaultfileoptions", fallback="/f"
         )
-        self.script_default_folder_opts = self._parser.get(
-            "settings", "scriptdefaultfolderoptions", fallback="/d /j"
+        folder_opts = self._parser.get(
+            "settings", "scriptdefaultfolderoptions", fallback="/j"
         )
-        self.admin_file_opts = self._parser.get("settings", "adminfileoptions", fallback="/f /h")
-        self.admin_folder_opts = self._parser.get(
-            "settings", "adminfolderoptions", fallback="/d /h /j"
+        admin_file = self._parser.get("settings", "adminfileoptions", fallback="/f /h")
+        admin_folder = self._parser.get("settings", "adminfolderoptions", fallback="/d")
+
+        self.script_default_file_opts = file_opts
+        self.script_default_folder_opts = folder_opts
+        self.admin_file_opts = admin_file
+        self.admin_folder_opts = admin_folder
+        self.admin_free = (
+            self._parser.get("settings", "adminfree", fallback="False").lower() == "true"
         )
         self.all_users = (
             self._parser.get("settings", "allusers", fallback="False").lower() == "true"
@@ -71,6 +70,7 @@ class Config:
             "scriptdefaultfolderoptions": self.script_default_folder_opts,
             "adminfileoptions": self.admin_file_opts,
             "adminfolderoptions": self.admin_folder_opts,
+            "adminfree": str(self.admin_free),
             "allusers": str(self.all_users),
         }
         os.makedirs(self.install_dir, exist_ok=True)

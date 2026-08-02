@@ -4,6 +4,35 @@ import glob
 import os
 
 
+def to_unc_path(path: str) -> str:
+    """Convert a mapped-drive path to its UNC form; return other paths unchanged.
+
+    Mapped network drives (net use) are per-session, so an elevated process
+    may not see them. Resolving the drive letter to its UNC share makes the
+    path usable in the elevated process.
+    """
+    drive, rest = os.path.splitdrive(path)
+    if not drive:
+        return path
+    try:
+        import ctypes
+
+        mpr = ctypes.windll.mpr
+        mpr.WNetGetConnectionW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        buf = ctypes.create_unicode_buffer(1024)
+        size = ctypes.c_ulong(len(buf))
+        result = mpr.WNetGetConnectionW(drive, buf, ctypes.byref(size))
+    except Exception:
+        return path
+    if result == 0 and buf.value:
+        return buf.value + rest
+    return path
+
+
 def resolve_paths(patterns: list[str], wildcard_loops: bool = False) -> tuple[list[str], list[str]]:
     """Resolve path patterns to actual files and folders.
 
