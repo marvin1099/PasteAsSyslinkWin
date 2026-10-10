@@ -41,7 +41,7 @@ Probe files are removed automatically after the operation (or by the elevated pr
 
 ### Option 1: Download the prebuilt executable (recommended)
 
-Download `mklinktool.exe` from the Releases page of the repository, then run it
+Download `mklinktoolw.exe` from the Releases page of the repository, then run it
 once, the installer GUI opens on first run.
 
 ### Option 2: Build from source
@@ -66,8 +66,9 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.10+.
    uv run build.py
    ```
    (or `uv run build.py --run` to also launch the exe afterwards).
-3. The executable is created at `dist\mklinktool.exe` with the custom icon
-   baked in. Run it once, the installer GUI opens on first run.
+3. The executable is created at `dist\mklinktoolw.exe` with the custom icon
+   baked in (next to a `mklinktool.bat` shim for use from cmd/PowerShell).
+   Run it once, the installer GUI opens on first run.
 
 ## Usage
 
@@ -169,7 +170,7 @@ allusers = False
 
 ## Uninstalling
 
-Run `dist\mklinktool.exe /u` to remove
+Run `dist\mklinktool /u` to remove
 the context menu entries, Task Scheduler rule, PATH entry, and config files.
 
 ## Project Structure

@@ -1,21 +1,38 @@
 """Interactive installation wizard with proper Windows install conventions."""
 
+import contextlib
 import os
 import shutil
 import sys
-import tkinter as tk
-from tkinter import filedialog, messagebox
 
 from src import task_scheduler
-from src.config import Config
+from src.config import APP_EXE_NAME, CLI_SHIM_NAME, LEGACY_EXE_NAME, Config
 from src.context_menu import add_context_menu
-from src.elevation import elevate_force_uac, is_admin
+from src.elevation import elevate_force_uac, get_exe_path, get_launch_command, is_admin
 from src.path_env import add_to_path, remove_from_path
 from src.uninstall_registry import add_uninstall_entry, remove_uninstall_entry
+
+tk = None
+filedialog = None
+messagebox = None
+
+
+def _ensure_tk() -> None:
+    """Import tkinter on first GUI use (keeps CLI/quiet paths tkinter-free)."""
+    global tk, filedialog, messagebox
+    if tk is None:
+        import tkinter as _tk
+        from tkinter import filedialog as _fd
+        from tkinter import messagebox as _mb
+
+        tk = _tk
+        filedialog = _fd
+        messagebox = _mb
 
 
 def _topmost_msgbox(kind: str, title: str, msg: str) -> None:
     """Show a messagebox that appears above the console window."""
+    _ensure_tk()
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
@@ -42,6 +59,7 @@ class _InstallerDialog:
         all_users: bool = False,
         reinstall_mode: bool = False,
     ):
+        _ensure_tk()
         self.basename = basename
         self.reinstall_mode = reinstall_mode
         self.result = None
@@ -347,17 +365,12 @@ def _do_install(basename: str, cfg: dict) -> None:
     """Shared install logic. cfg must contain all required keys."""
     install_dir = cfg["install_dir"]
     all_users = cfg["all_users"]
+    # Keep a silent install silent across the elevated relaunch.
+    elev_flags = [a for a in sys.argv[1:] if a in ("/nogui", "/noguiall")]
 
     if all_users and not is_admin():
-        elevate_force_uac(basename, [])
-        if not is_admin():
-            _topmost_msgbox(
-                "showerror",
-                "PasteAsSyslinkWin",
-                "Admin rights are required for 'All users' install.\n"
-                "Please accept the UAC prompt or choose 'Current user'.",
-            )
-            sys.exit(1)
+        elevate_force_uac(basename, elev_flags)
+        return  # elevate_force_uac exits; never reached unless already admin
 
     os.makedirs(install_dir, exist_ok=True)
 
@@ -368,18 +381,19 @@ def _do_install(basename: str, cfg: dict) -> None:
         os.remove(test_file)
     except OSError:
         if not is_admin():
-            elevate_force_uac(basename, [])
-            if not is_admin():
-                _topmost_msgbox(
-                    "showerror",
-                    "PasteAsSyslinkWin",
-                    f"Cannot write to: {install_dir}\n"
-                    "Please run as administrator or choose a different folder.",
-                )
-                sys.exit(1)
+            elevate_force_uac(basename, elev_flags)
+            return
+        _topmost_msgbox(
+            "showerror",
+            "PasteAsSyslinkWin",
+            f"Cannot write to: {install_dir}\n"
+            "Please run as administrator or choose a different folder.",
+        )
+        sys.exit(1)
 
     if cfg["use_task"] and not is_admin():
-        elevate_force_uac(basename, [])
+        elevate_force_uac(basename, elev_flags)
+        return
 
     file_opts = cfg.get("file_opts", "/f").strip()
     folder_opts = cfg.get("folder_opts", "/j").strip()
@@ -397,20 +411,29 @@ def _do_install(basename: str, cfg: dict) -> None:
     config.all_users = all_users
     config.save()
 
-    _copy_script(install_dir, basename)
-
-    script_dest = os.path.join(install_dir, os.path.basename(sys.executable))
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        _copy_script(install_dir, basename)
+        script_dest = os.path.join(install_dir, os.path.basename(sys.executable))
+        task_command, task_args = script_dest, ""
+        cmd_prefix = f'"{script_dest}"'
+    else:
+        # Source run: register the script itself; do not copy python.exe.
+        script_dest = get_exe_path()
+        task_command, task_args = get_launch_command()
+        cmd_prefix = f'"{task_command}" {task_args}'.strip()
+        _write_cli_shim(install_dir, task_command, task_args)
 
     if cfg["add_context"]:
         add_context_menu(script_dest, file_opts, folder_opts)
 
     if cfg["use_task"]:
-        task_scheduler.create_task(basename, script_dest)
+        task_scheduler.create_task(basename, task_command, task_args)
 
     if cfg["add_to_path"]:
         add_to_path(install_dir, all_users=all_users)
 
-    add_uninstall_entry(install_dir, script_dest, all_users=all_users)
+    add_uninstall_entry(install_dir, script_dest, all_users=all_users, command=cmd_prefix)
 
 
 def run_installer(basename: str, *, reinstall: bool = False) -> None:
@@ -471,16 +494,45 @@ def run_installer_silent(
     sys.exit(0)
 
 
+def _write_cli_shim(install_dir: str, command: str, command_args: str = "") -> None:
+    """Write the mklinktool.bat CLI shim so shells get blocking CLI semantics.
+
+    cmd waits for GUI executables invoked from batch context and inherits
+    std handles, so a direct call gives output, redirection, and exit codes.
+    """
+    target = f'"{command}"'
+    if command_args:
+        target += f" {command_args}"
+    content = "@echo off\r\n" f"{target} %*\r\n" "exit /b %errorlevel%\r\n"
+    with open(os.path.join(install_dir, CLI_SHIM_NAME), "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+
+
 def _copy_script(install_dir: str, basename: str) -> None:
-    """Copy the executable to the installation directory."""
+    """Copy the executable and CLI shim to the installation directory."""
     src = sys.executable
     dst = os.path.join(install_dir, os.path.basename(sys.executable))
     if os.path.normpath(src) != os.path.normpath(dst):
         shutil.copy2(src, dst)
+    # Upgrade path: drop the exe of the old console build.
+    legacy = os.path.join(install_dir, LEGACY_EXE_NAME)
+    if (
+        os.path.normcase(os.path.normpath(legacy)) != os.path.normcase(os.path.normpath(dst))
+        and os.path.isfile(legacy)
+    ):
+        with contextlib.suppress(OSError):
+            os.remove(legacy)
+    _write_cli_shim(install_dir, dst)
 
 
-def run_uninstaller(basename: str, install_dir: str, use_task: bool) -> None:
-    """Remove all installed components."""
+def run_uninstaller(
+    basename: str, install_dir: str, use_task: bool, *, quiet: bool = False
+) -> None:
+    """Remove all installed components.
+
+    With ``quiet`` no GUI is shown (used by QuietUninstallString and the
+    CLI ``/uninstall /nogui``); a message is printed instead when possible.
+    """
     if use_task:
         task_scheduler.delete_task(basename)
 
@@ -497,33 +549,37 @@ def run_uninstaller(basename: str, install_dir: str, use_task: bool) -> None:
     config = Config(install_dir, basename)
     config.delete()
 
-    ico = os.path.join(install_dir, f"{basename}.ico")
-    if os.path.exists(ico):
-        os.remove(ico)
+    # The installed exe may be this very process (Apps & Features flow): the
+    # immediate remove then fails silently and the scheduled cleanup below
+    # deletes it once the process has exited.
+    for name in (f"{basename}.ico", CLI_SHIM_NAME, LEGACY_EXE_NAME, APP_EXE_NAME):
+        path = os.path.join(install_dir, name)
+        if os.path.isfile(path):
+            with contextlib.suppress(OSError):
+                os.remove(path)
 
-    exe_path = os.path.join(install_dir, f"{basename}.exe")
-    running_from_install = (
-        getattr(sys, "frozen", False)
-        and os.path.isfile(exe_path)
-        and os.path.normcase(os.path.normpath(sys.executable))
-        == os.path.normcase(os.path.normpath(exe_path))
-    )
-    if running_from_install:
-        _schedule_self_delete(install_dir, exe_path)
+    _schedule_self_delete(install_dir, os.path.join(install_dir, APP_EXE_NAME))
 
-    _topmost_msgbox("showinfo", "PasteAsSyslinkWin", "Uninstallation complete!")
+    if quiet:
+        print("Uninstallation complete!")
+    else:
+        _topmost_msgbox("showinfo", "PasteAsSyslinkWin", "Uninstallation complete!")
 
 
 def _schedule_self_delete(install_dir: str, exe_path: str) -> None:
-    """Spawn a detached cleanup process that deletes the exe and install dir after exit."""
+    """Spawn a detached cleanup process that deletes the exe and install dir after exit.
+
+    The steps are chained with ``&`` (not ``&&``) so the directory removal is
+    attempted even when the exe is already gone.
+    """
     import subprocess
 
     exe_quoted = f'"{exe_path}"'
     dir_quoted = f'"{install_dir}"'
     cmd = (
         f'cmd /c "timeout /t 5 /nobreak >nul '
-        f'&& del /f /q {exe_quoted} 2>nul '
-        f'&& rmdir {dir_quoted} 2>nul"'
+        f'& del /f /q {exe_quoted} 2>nul '
+        f'& rmdir {dir_quoted} 2>nul"'
     )
     CREATE_NO_WINDOW = 0x08000000
     subprocess.Popen(

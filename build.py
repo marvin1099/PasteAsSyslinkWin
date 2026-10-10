@@ -1,10 +1,12 @@
-"""Build dist\\mklinktool.exe (onefile console build with custom icon).
+"""Build dist\\mklinktoolw.exe (onefile windowed build with custom icon).
 
 Run with:  uv run build.py [--run]   (or double-click build.bat / build-run.bat)
 
 Prepares the project venv (uv sync installs project + dev deps such as
-PyInstaller) and bundles src/main.py into a single console exe that carries
-src/mklinktool.ico. With --run the freshly built executable is launched.
+PyInstaller) and bundles src/main.py into a single windowed exe that carries
+src/mklinktool.ico. A mklinktool.bat CLI shim is written next to it so
+`mklinktool` keeps working from cmd/PowerShell with output and exit codes.
+With --run the freshly built executable is launched.
 """
 
 import argparse
@@ -14,7 +16,20 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-EXE_PATH = os.path.join(ROOT, "dist", "mklinktool.exe")
+EXE_PATH = os.path.join(ROOT, "dist", "mklinktoolw.exe")
+SHIM_PATH = os.path.join(ROOT, "dist", "mklinktool.bat")
+
+SHIM_CONTENT = (
+    "@echo off\r\n"
+    '"%~dp0mklinktoolw.exe" %*\r\n'
+    "exit /b %errorlevel%\r\n"
+)
+
+
+def _write_shim(path: str) -> None:
+    """Write the CLI batch shim next to the executable."""
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(SHIM_CONTENT)
 
 
 def _clean() -> None:
@@ -40,7 +55,7 @@ def _uv_sync() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build dist\\mklinktool.exe")
+    parser = argparse.ArgumentParser(description="Build dist\\mklinktoolw.exe")
     parser.add_argument(
         "--run",
         action="store_true",
@@ -61,8 +76,8 @@ def main() -> int:
 
     pyinstaller_args = [
         "--onefile",
-        "--console",
-        "--name", "mklinktool",
+        "--noconsole",
+        "--name", "mklinktoolw",
         "--icon", "src/mklinktool.ico",
         "--add-data", "src/mklinktool.ico;.",
         "--hidden-import", "src.uninstall_registry",
@@ -77,11 +92,12 @@ def main() -> int:
             return code
 
     _remove_build_artifacts()
-    print("Build complete: dist\\mklinktool.exe")
+    _write_shim(SHIM_PATH)
+    print("Build complete: dist\\mklinktoolw.exe (+ mklinktool.bat shim)")
 
     if parsed.run:
-        print(f"Running {EXE_PATH}")
-        return subprocess.run([EXE_PATH], cwd=ROOT).returncode
+        print(f"Running {SHIM_PATH}")
+        return subprocess.run([SHIM_PATH], cwd=ROOT).returncode
     return 0
 
 

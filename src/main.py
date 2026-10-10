@@ -4,6 +4,7 @@ A CLI tool and context menu integration for creating symlinks
 by copying files/folders and pasting them as symlinks.
 """
 
+import contextlib
 import os
 import sys
 
@@ -22,9 +23,9 @@ from src.elevation import (
     elevate,
     elevate_force_uac,
     get_exe_path,
+    get_launch_command,
     is_admin,
 )
-from src.installer import run_uninstaller
 from src.pathresolver import resolve_paths, to_unc_path
 from src.symlink_ops import (
     create_write_probe,
@@ -98,6 +99,7 @@ def _main_impl() -> None:
     nogui = nogui or nogui_all
 
     if "/help" in sys.argv or "/?" in sys.argv:
+        writeback.dbg(f"help-dispatch silent={writeback.is_silent()}")
         if writeback.is_silent():
             _show_help_gui()
         else:
@@ -160,14 +162,17 @@ def _main_impl() -> None:
 
     install_mode = parsed["install_mode"]
     if install_mode is True:
+        from src.installer import run_uninstaller
+
         task_scheduler.delete_args_file(BASENAME)
-        run_uninstaller(BASENAME, install_dir, config.task)
+        run_uninstaller(BASENAME, install_dir, config.task, quiet=nogui)
         return
 
     if install_mode is False:
         task_scheduler.delete_args_file(BASENAME)
         if config.task:
-            task_scheduler.create_task(BASENAME, get_exe_path())
+            task_command, task_args = get_launch_command()
+            task_scheduler.create_task(BASENAME, task_command, task_args)
 
         root_args = (
             (f"{config.script_default_file_opts} {config.script_default_folder_opts}")
@@ -360,6 +365,7 @@ def _show_help_gui() -> None:
     import tkinter as tk
     from tkinter import scrolledtext
 
+    writeback.dbg("help-gui-start")
     root = tk.Tk()
     root.title("PasteAsSyslinkWin - Help")
     text = scrolledtext.ScrolledText(root, width=90, height=26, font=("Consolas", 9))
@@ -371,6 +377,7 @@ def _show_help_gui() -> None:
 
 
 def _show_error(title: str, msg: str) -> None:
+    writeback.dbg(f"error-show {title!r}")
     print(f"{title}: {msg}")
     if not writeback.is_silent():
         return
@@ -386,6 +393,7 @@ def _show_error(title: str, msg: str) -> None:
 
 def main() -> None:
     """Entry point. Relays output to the parent when running elevated."""
+    writeback.dbg(f"main-entry argv={sys.argv!r}")
     writeback_child = writeback.activate_child(BASENAME)
     writeback.setup_console_streams(writeback_child)
     code = 0
@@ -394,10 +402,12 @@ def main() -> None:
     except Exception as e:
         import traceback
 
+        writeback.dbg(f"exception {e!r}")
         print(f"ERROR: {e}")
         print(traceback.format_exc())
-        if writeback_child is None and sys.stdin is not None:
-            input("Press Enter to exit...")
+        if writeback_child is None and sys.stdin is not None and sys.stdin.isatty():
+            with contextlib.suppress(EOFError):
+                input("Press Enter to exit...")
         code = 1
     finally:
         if writeback_child is not None:

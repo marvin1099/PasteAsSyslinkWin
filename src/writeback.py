@@ -35,6 +35,22 @@ class _NullStream:
     def readline(self) -> str:
         return ""
 
+    def isatty(self) -> bool:
+        return False
+
+
+def dbg(msg: str) -> None:
+    """Append a diagnostic line when MKLINKTOOL_DEBUG is set."""
+    if os.environ.get("MKLINKTOOL_DEBUG"):
+        try:
+            import tempfile
+
+            path = os.path.join(tempfile.gettempdir(), "mklinktool_debug.log")
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except OSError:
+            pass
+
 
 def _send(sock: socket.socket, obj: dict) -> None:
     with contextlib.suppress(OSError):
@@ -310,23 +326,132 @@ def _wire_console_streams() -> bool:
         return False
 
 
+def _std_handle_state() -> str:
+    """Classify our stdout handle: ``missing``, ``console`` or ``redirected``.
+
+    Uses the real ``GetFileType`` values: ``FILE_TYPE_DISK`` (1) and
+    ``FILE_TYPE_PIPE`` (3) are caller-provided redirects, ``FILE_TYPE_CHAR``
+    (2) is a console buffer (or the NUL device), anything else is missing.
+    Console handles are only usable while attached to that console.
+    """
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        if not _valid_handle(handle):
+            dbg("state: stdout handle invalid")
+            return "missing"
+        file_type = kernel32.GetFileType(handle)
+        hin = kernel32.GetStdHandle(-10)
+        htype_in = kernel32.GetFileType(hin) if _valid_handle(hin) else -1
+        herr = kernel32.GetStdHandle(-12)
+        type_err = kernel32.GetFileType(herr) if _valid_handle(herr) else -1
+        dbg(
+            f"state: out=0x{handle & 0xFFFFFFFFFFFFFFFF:x}/0x{file_type:x} "
+            f"in=0x{hin & 0xFFFFFFFFFFFFFFFF:x}/0x{htype_in & 0xFFFFFFFF:x} "
+            f"err=0x{herr & 0xFFFFFFFFFFFFFFFF:x}/0x{type_err & 0xFFFFFFFF:x} "
+            f"conwin={kernel32.GetConsoleWindow() & 0xFFFFFFFFFFFFFFFF:x} "
+            f"cp={kernel32.GetConsoleCP()}"
+        )
+        if file_type in (0x0001, 0x0003):  # FILE_TYPE_DISK / FILE_TYPE_PIPE
+            return "redirected"
+        if file_type == 0x0002:  # FILE_TYPE_CHAR (console buffer / NUL)
+            return "console"
+        return "missing"  # FILE_TYPE_UNKNOWN
+    except Exception:
+        return "missing"
+
+
+def _std_handles_redirected() -> bool:
+    """True when the launcher redirected stdout to a pipe or file.
+
+    In that case output must be kept even without a terminal attached:
+    the caller explicitly asked for it (e.g. ``> out.txt`` or
+    ``Start-Process -RedirectStandardOutput``).
+    """
+    return _std_handle_state() == "redirected"
+
+
+def _force_rewire_console() -> bool:
+    """Replace the current std handles with this console's real handles.
+
+    Needed after attaching when the launcher passed in foreign console
+    handles: those are valid handle values but unusable in this process.
+    """
+    try:
+        for fd in (1, 2):
+            h = os.open("CONOUT$", os.O_WRONLY)
+            os.dup2(h, fd)
+            os.close(h)
+    except OSError:
+        return False
+    try:
+        sys.stdout = os.fdopen(1, "w", encoding="utf-8", errors="replace", buffering=1)
+        sys.stderr = os.fdopen(2, "w", encoding="utf-8", errors="replace", buffering=1)
+    except OSError:
+        return False
+    try:
+        h = os.open("CONIN$", os.O_RDONLY)
+        os.dup2(h, 0)
+        os.close(h)
+        sys.stdin = os.fdopen(0, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        sys.stdin = _NullStream()
+    return True
+
+
 def setup_console_streams(writeback_child: ChildWriteback | None = None) -> None:
     """Route console output: terminal when launched from one, silent otherwise.
 
-    - Windowed builds have no std handles: attach to the launching terminal's
-      console, or go silent when there is none.
-    - Console builds launched from Explorer/the task scheduler/UAC get an
-      auto-created console window: hide it so nothing pops up.
+    - Launcher-provided pipes/files are kept untouched (``> out.txt``).
+    - When our console is shared with a real terminal shell, keep everything.
+    - Windowed builds (no console) attach to the launching terminal's console
+      via the CLI shim, or go silent when there is none.
+    - Any console window we own but no terminal uses it: hide it so nothing
+      pops up (Explorer / task scheduler / UAC launches).
     """
-    if sys.stdout is None and sys.stderr is None:
-        if _attach_to_parent_console() and _wire_console_streams():
+    state = _std_handle_state()
+    terminal = _launched_from_terminal()
+    dbg(f"setup: state={state} terminal={terminal} wb={writeback_child is not None}")
+
+    if state == "redirected":
+        # Caller-provided pipe/file: always keep it; hide any console we own.
+        if not terminal:
+            _hide_console_window()
+        dbg("setup: branch=redirected")
+        return
+
+    if state == "console":
+        if terminal:
+            dbg("setup: branch=terminal-console")
+            return  # console shared with a real shell: leave everything alone
+        _hide_console_window()
+        if writeback_child is not None:
+            dbg("setup: branch=console-writeback")
+            return  # elevated relay: stdout/stderr are already sockets
+        if _attach_to_parent_console():
+            # Handles may be foreign: rebuild them from the attached console.
+            rewired = _force_rewire_console()
+            dbg(f"setup: branch=console-attach ok={rewired}")
             return
         _null_streams()
+        dbg("setup: branch=console-null")
         return
-    if not _launched_from_terminal():
-        had_console = _hide_console_window()
-        if writeback_child is None and had_console:
-            _null_streams()
+
+    # state == "missing": no usable stdout handle.
+    if terminal:
+        rewired = _force_rewire_console()
+        dbg(f"setup: branch=terminal-rewire ok={rewired}")
+        return
+    _hide_console_window()
+    if writeback_child is not None:
+        dbg("setup: branch=missing-writeback")
+        return  # elevated relay: stdout/stderr are already sockets
+    if _attach_to_parent_console():
+        wired = _wire_console_streams()
+        dbg(f"setup: branch=attach-wire ok={wired}")
+        return
+    _null_streams()
+    dbg("setup: branch=null-streams")
 
 
 def run_writeback_parent(launch, args: list[str]) -> int:
