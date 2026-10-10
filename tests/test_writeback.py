@@ -219,6 +219,7 @@ def test_setup_console_streams_keeps_socket_streams(monkeypatch):
     child_sock, _ = socket.socketpair()
     stream = writeback._SocketStream(child_sock, "stdout")
     monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "redirected")
     monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: False)
     monkeypatch.setattr(writeback, "_hide_console_window", lambda: None)
     writeback.setup_console_streams(writeback_child="handle")
@@ -230,12 +231,26 @@ def test_setup_console_streams_nulls_when_not_child(monkeypatch):
     monkeypatch.setattr(sys, "stdout", sys.__stdout__)
     monkeypatch.setattr(sys, "stderr", sys.__stderr__)
     monkeypatch.setattr(writeback, "_silent", False)
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "missing")
     monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: False)
     monkeypatch.setattr(writeback, "_hide_console_window", lambda: True)
+    monkeypatch.setattr(writeback, "_attach_to_parent_console", lambda: False)
     writeback.setup_console_streams(writeback_child=None)
     assert writeback._silent is True
     assert isinstance(sys.stdout, writeback._NullStream)
     assert writeback.should_relay() is False
+
+
+def test_setup_console_streams_keeps_redirected_handles_when_hidden(monkeypatch):
+    monkeypatch.setattr(sys, "stdout", sys.__stdout__)
+    monkeypatch.setattr(sys, "stderr", sys.__stderr__)
+    monkeypatch.setattr(writeback, "_silent", False)
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "redirected")
+    monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: False)
+    monkeypatch.setattr(writeback, "_hide_console_window", lambda: True)
+    writeback.setup_console_streams(writeback_child=None)
+    assert writeback._silent is False
+    assert sys.stdout is sys.__stdout__
 
 
 def test_setup_console_streams_keeps_redirected_streams(monkeypatch):
@@ -245,4 +260,96 @@ def test_setup_console_streams_keeps_redirected_streams(monkeypatch):
     monkeypatch.setattr(writeback, "_hide_console_window", lambda: False)
     writeback.setup_console_streams(writeback_child=None)
     assert sys.stdout is sys.__stdout__
+    assert writeback._silent is False
+
+
+def test_setup_console_streams_shim_attach_wires_console(monkeypatch):
+    """CLI shim: no terminal of our own -> attach to the parent's console."""
+    monkeypatch.setattr(writeback, "_silent", False)
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "missing")
+    monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: False)
+    monkeypatch.setattr(writeback, "_hide_console_window", lambda: True)
+    monkeypatch.setattr(writeback, "_attach_to_parent_console", lambda: True)
+    wired = {}
+    monkeypatch.setattr(writeback, "_wire_console_streams", lambda: wired.setdefault("ok", True))
+    writeback.setup_console_streams(writeback_child=None)
+    assert wired.get("ok")
+    assert writeback._silent is False
+
+
+def test_setup_console_streams_foreign_console_handles_rewired(monkeypatch):
+    """Inherited-but-foreign console handles: attach then force a rewire."""
+    monkeypatch.setattr(writeback, "_silent", False)
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "console")
+    monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: False)
+    monkeypatch.setattr(writeback, "_hide_console_window", lambda: False)
+    monkeypatch.setattr(writeback, "_attach_to_parent_console", lambda: True)
+    calls = []
+    monkeypatch.setattr(writeback, "_force_rewire_console", lambda: calls.append("rewire"))
+    writeback.setup_console_streams(writeback_child=None)
+    assert calls == ["rewire"]
+    assert writeback._silent is False
+
+
+def test_setup_console_streams_terminal_console_untouched(monkeypatch):
+    """Launched from a terminal with our own console: leave everything alone."""
+    monkeypatch.setattr(sys, "stdout", sys.__stdout__)
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "console")
+    monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: True)
+    monkeypatch.setattr(writeback, "_hide_console_window", lambda: True)
+    writeback.setup_console_streams(writeback_child=None)
+    assert sys.stdout is sys.__stdout__
+
+
+def test_setup_console_streams_writeback_child_never_nulled(monkeypatch):
+    """Elevated relay keeps its socket streams even without a console."""
+    child_sock, _ = socket.socketpair()
+    stream = writeback._SocketStream(child_sock, "stdout")
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(writeback, "_silent", False)
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "missing")
+    monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: False)
+    monkeypatch.setattr(writeback, "_hide_console_window", lambda: True)
+    monkeypatch.setattr(writeback, "_attach_to_parent_console", lambda: True)
+    writeback.setup_console_streams(writeback_child="handle")
+    assert sys.stdout is stream
+    assert writeback._silent is False
+    child_sock.close()
+
+
+def test_std_handle_state_pipe_and_disk_are_redirected(monkeypatch):
+    """Real GetFileType values: DISK=1 and PIPE=3 are caller redirects."""
+    k32 = writeback.ctypes.windll.kernel32
+    monkeypatch.setattr(k32, "GetStdHandle", lambda which: 0x100)
+    monkeypatch.setattr(k32, "GetFileType", lambda h: 0x0003)  # FILE_TYPE_PIPE
+    assert writeback._std_handle_state() == "redirected"
+    monkeypatch.setattr(k32, "GetFileType", lambda h: 0x0001)  # FILE_TYPE_DISK
+    assert writeback._std_handle_state() == "redirected"
+
+
+def test_std_handle_state_char_is_console(monkeypatch):
+    """FILE_TYPE_CHAR (2) is a console buffer, not a redirect."""
+    k32 = writeback.ctypes.windll.kernel32
+    monkeypatch.setattr(k32, "GetStdHandle", lambda which: 0x100)
+    monkeypatch.setattr(k32, "GetFileType", lambda h: 0x0002)  # FILE_TYPE_CHAR
+    assert writeback._std_handle_state() == "console"
+
+
+def test_std_handle_state_invalid_or_unknown_is_missing(monkeypatch):
+    k32 = writeback.ctypes.windll.kernel32
+    monkeypatch.setattr(k32, "GetStdHandle", lambda which: 0)
+    assert writeback._std_handle_state() == "missing"
+    monkeypatch.setattr(k32, "GetStdHandle", lambda which: 0x100)
+    monkeypatch.setattr(k32, "GetFileType", lambda h: 0x0000)  # FILE_TYPE_UNKNOWN
+    assert writeback._std_handle_state() == "missing"
+
+
+def test_setup_console_streams_terminal_missing_rewired(monkeypatch):
+    """In a terminal with broken handles: rebuild them from the console."""
+    monkeypatch.setattr(writeback, "_std_handle_state", lambda: "missing")
+    monkeypatch.setattr(writeback, "_launched_from_terminal", lambda: True)
+    calls = []
+    monkeypatch.setattr(writeback, "_force_rewire_console", lambda: calls.append("rewire"))
+    writeback.setup_console_streams(writeback_child=None)
+    assert calls == ["rewire"]
     assert writeback._silent is False
