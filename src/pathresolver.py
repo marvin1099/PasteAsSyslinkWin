@@ -1,7 +1,16 @@
 """Path resolution with wildcard/glob support."""
 
+# Module-level ctypes setup: avoids re-declaring argtypes on every call.
+import ctypes
 import glob
 import os
+from ctypes import wintypes
+
+_mpr = ctypes.WinDLL("mpr", use_last_error=True)
+_mpr.WNetGetConnectionW.argtypes = [
+    wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+]
+_mpr.WNetGetConnectionW.restype = wintypes.DWORD
 
 
 def to_unc_path(path: str) -> str:
@@ -15,25 +24,18 @@ def to_unc_path(path: str) -> str:
     if not drive:
         return path
     try:
-        import ctypes
-
-        mpr = ctypes.windll.mpr
-        mpr.WNetGetConnectionW.argtypes = [
-            ctypes.c_wchar_p,
-            ctypes.c_wchar_p,
-            ctypes.POINTER(ctypes.c_ulong),
-        ]
         buf = ctypes.create_unicode_buffer(1024)
-        size = ctypes.c_ulong(len(buf))
-        result = mpr.WNetGetConnectionW(drive, buf, ctypes.byref(size))
+        size = wintypes.DWORD(len(buf))
+        if _mpr.WNetGetConnectionW(drive, buf, ctypes.byref(size)) == 0 and buf.value:
+            return buf.value + rest
     except Exception:
-        return path
-    if result == 0 and buf.value:
-        return buf.value + rest
+        pass
     return path
 
 
-def resolve_paths(patterns: list[str], wildcard_loops: bool = False) -> tuple[list[str], list[str]]:
+def resolve_paths(
+    patterns: list[str], wildcard_loops: bool = False
+) -> tuple[list[str], list[str]]:
     """Resolve path patterns to actual files and folders.
 
     Args:
@@ -44,8 +46,8 @@ def resolve_paths(patterns: list[str], wildcard_loops: bool = False) -> tuple[li
     Returns:
         Tuple of (file_paths, folder_paths).
     """
-    files = []
-    folders = []
+    files: list[str] = []
+    folders: list[str] = []
 
     for pattern in patterns:
         if not pattern:
@@ -55,8 +57,7 @@ def resolve_paths(patterns: list[str], wildcard_loops: bool = False) -> tuple[li
             continue
 
         if any(c in pattern for c in "*?"):
-            matches = glob.glob(pattern, recursive=False)
-            for match in matches:
+            for match in glob.glob(pattern, recursive=False):
                 if os.path.isdir(match):
                     folders.append(os.path.normpath(match))
                 elif os.path.isfile(match):

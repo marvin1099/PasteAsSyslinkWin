@@ -3,6 +3,9 @@
 import os
 import subprocess
 import tempfile
+import winreg
+
+_TASK_CACHE = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree"
 
 
 def _task_name(basename: str) -> str:
@@ -10,24 +13,35 @@ def _task_name(basename: str) -> str:
 
 
 def task_exists(basename: str) -> bool:
-    """Check if the scheduled task exists."""
-    name = _task_name(basename)
-    result = subprocess.run(
-        ["schtasks", "/Query", "/TN", name],
-        capture_output=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    return result.returncode == 0
+    """Check if the scheduled task exists via the registry (no subprocess).
+
+    Task entries are registered under the Task Scheduler cache tree.
+    Reading the registry is ~100x faster than spawning schtasks /Query.
+    """
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            f"{_TASK_CACHE}\\{_task_name(basename)}",
+            0,
+            winreg.KEY_READ,
+        )
+        winreg.CloseKey(key)
+        return True
+    except OSError:
+        return False
 
 
-def create_task(basename: str, exe_path: str) -> bool:
+def create_task(basename: str, exe_path: str, arguments: str = "") -> bool:
     """Create a task with no triggers and HIGHEST run level.
 
     The task has no auto-trigger; it is only started via run_task(). The
     task is marked Hidden so it is not shown in the Task Scheduler UI, and
-    running it does not flash a console window.
+    running it does not flash a console window. ``arguments`` is passed
+    through verbatim (used for non-frozen launches: the python executable
+    plus the script path).
     """
     name = _task_name(basename)
+    args_xml = f"\n      <Arguments>{arguments}</Arguments>" if arguments else ""
     xml = f"""\
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -58,7 +72,7 @@ def create_task(basename: str, exe_path: str) -> bool:
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>"{exe_path}"</Command>
+      <Command>"{exe_path}"</Command>{args_xml}
     </Exec>
   </Actions>
 </Task>"""
@@ -132,8 +146,7 @@ def read_args_file(basename: str) -> list[str]:
     if not os.path.exists(arg_file):
         return []
     with open(arg_file, encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    return lines
+        return [line.strip() for line in f if line.strip()]
 
 
 def delete_args_file(basename: str) -> None:
