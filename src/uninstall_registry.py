@@ -7,13 +7,18 @@ _UNINSTALL_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\mklinktoo
 
 
 def add_uninstall_entry(
-    install_dir: str, exe_path: str, all_users: bool = False
+    install_dir: str, exe_path: str, all_users: bool = False, command: str | None = None
 ) -> bool:
-    """Create an uninstall entry in Windows Settings > Apps."""
+    """Create an uninstall entry in Windows Settings > Apps.
+
+    ``command`` overrides the launch prefix (e.g. ``"python" "script.py"``)
+    used for the uninstall strings; defaults to the exe path alone.
+    """
     hive = winreg.HKEY_LOCAL_MACHINE if all_users else winreg.HKEY_CURRENT_USER
     subkey = _UNINSTALL_KEY
     icon_path = os.path.join(install_dir, "mklinktool.ico")
     icon = icon_path if os.path.isfile(icon_path) else exe_path
+    prefix = command or f'"{exe_path}"'
     try:
         key = winreg.CreateKeyEx(hive, subkey, 0, winreg.KEY_ALL_ACCESS)
         winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "PasteAsSyslinkWin")
@@ -24,9 +29,9 @@ def add_uninstall_entry(
         winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
         winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
         winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "PasteAsSyslinkWin")
-        uninstall_cmd = f'"{exe_path}" /uninstall'
+        uninstall_cmd = f"{prefix} /uninstall"
         winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstall_cmd)
-        quiet_cmd = f'"{exe_path}" /uninstall /nogui'
+        quiet_cmd = f"{prefix} /uninstall /nogui"
         winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, quiet_cmd)
         winreg.CloseKey(key)
         return True

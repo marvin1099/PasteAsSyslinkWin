@@ -2,13 +2,27 @@
 
 import ctypes
 import winreg
+from ctypes import wintypes
 
-BroadcastMessage = ctypes.windll.user32.SendMessageW
 HWND_BROADCAST = 0xFFFF
 WM_SETTINGCHANGE = 0x001A
+SMTO_ABORTIFHUNG = 0x0002
+BROADCAST_TIMEOUT_MS = 5000
 
 HKLM_ENV = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
 HKCU_ENV = r"Environment"
+
+_user32 = ctypes.windll.user32
+_user32.SendMessageTimeoutW.argtypes = [
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    ctypes.c_void_p,
+    wintypes.UINT,
+    wintypes.UINT,
+    ctypes.POINTER(ctypes.c_size_t),
+]
+_user32.SendMessageTimeoutW.restype = wintypes.BOOL
 
 
 def _read_path(hive: int) -> str:
@@ -33,8 +47,20 @@ def _write_path(hive: int, path: str) -> None:
 
 
 def _broadcast() -> None:
-    """Broadcast WM_SETTINGCHANGE so other processes pick up PATH changes."""
-    BroadcastMessage(HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment")
+    """Broadcast WM_SETTINGCHANGE so other processes pick up PATH changes.
+
+    Uses a bounded, abort-if-hung broadcast so a stuck receiver window
+    can never block the caller indefinitely.
+    """
+    _user32.SendMessageTimeoutW(
+        HWND_BROADCAST,
+        WM_SETTINGCHANGE,
+        0,
+        ctypes.c_wchar_p("Environment"),
+        SMTO_ABORTIFHUNG,
+        BROADCAST_TIMEOUT_MS,
+        None,
+    )
 
 
 def add_to_path(directory: str, all_users: bool = False) -> bool:

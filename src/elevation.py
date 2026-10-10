@@ -15,6 +15,19 @@ def is_admin() -> bool:
         return False
 
 
+def get_launch_command() -> tuple[str, str]:
+    """Return (command, arguments) needed to launch this tool elevated.
+
+    Frozen builds launch the exe directly. Source runs need the Python
+    interpreter plus the script path, since CreateProcess (task scheduler)
+    cannot start a bare .py file.
+    """
+    exe_path = get_exe_path()
+    if getattr(sys, "frozen", False):
+        return exe_path, ""
+    return sys.executable, f'"{exe_path}"'
+
+
 def elevate(basename: str, args: list[str]) -> None:
     """Elevate the current process. Uses Task Scheduler if available, else UAC.
 
@@ -27,11 +40,11 @@ def elevate(basename: str, args: list[str]) -> None:
     """
     if is_admin():
         if not task_scheduler.task_exists(basename):
-            exe_path = get_exe_path()
-            task_scheduler.create_task(basename, exe_path)
+            exe_path, task_args = get_launch_command()
+            task_scheduler.create_task(basename, exe_path, task_args)
         return
 
-    exe_path = get_exe_path()
+    command, task_args = get_launch_command()
 
     if task_scheduler.task_exists(basename):
         if writeback.should_relay():
@@ -42,32 +55,34 @@ def elevate(basename: str, args: list[str]) -> None:
 
             _exit_process(writeback.run_writeback_parent(launch, args))
         task_scheduler.write_args_file(basename, args)
-        task_scheduler.run_task(basename)
-        _exit_process()
-    else:
-        if writeback.should_relay():
-            _exit_process(
-                writeback.run_writeback_parent(
-                    lambda full: _launch_uac(exe_path, full), args
-                )
-            )
-        _launch_uac(exe_path, args)
-        _exit_process()
+        if task_scheduler.run_task(basename):
+            _exit_process()
+        # Task run failed (e.g. task deleted or disabled): fall back to UAC.
+        task_scheduler.delete_args_file(basename)
 
-
-def elevate_force_uac(basename: str, args: list[str]) -> None:
-    """Force UAC elevation (e.g., when script name is wrong)."""
-    if is_admin():
-        return
-    exe_path = get_exe_path()
     if writeback.should_relay():
         _exit_process(
             writeback.run_writeback_parent(
-                lambda full: _launch_uac(exe_path, full), args
+                lambda full: _launch_uac(command, task_args, full), args
             )
         )
-    _launch_uac(exe_path, args)
-    _exit_process()
+    launched = _launch_uac(command, task_args, args)
+    _exit_process(0 if launched else 1)
+
+
+def elevate_force_uac(basename: str, args: list[str]) -> None:
+    """Force UAC elevation (e.g., when the silent path is untrusted)."""
+    if is_admin():
+        return
+    command, task_args = get_launch_command()
+    if writeback.should_relay():
+        _exit_process(
+            writeback.run_writeback_parent(
+                lambda full: _launch_uac(command, task_args, full), args
+            )
+        )
+    launched = _launch_uac(command, task_args, args)
+    _exit_process(0 if launched else 1)
 
 
 def get_exe_path() -> str:
@@ -88,18 +103,19 @@ def get_exe_path() -> str:
     return path
 
 
-def _launch_uac(exe_path: str, args: list[str]) -> bool:
+def _launch_uac(command: str, command_args: str, args: list[str]) -> bool:
     """Launch via ShellExecuteW runas verb to trigger UAC prompt.
 
     Returns True when the process was launched (UAC accepted).
     """
     arg_str = " ".join(f'"{a}"' for a in args if a)
+    params = " ".join(p for p in (command_args, "/restart", arg_str) if p)
     verb = "runas"
     result = ctypes.windll.shell32.ShellExecuteW(
         None,
         verb,
-        exe_path,
-        f"/restart {arg_str}" if arg_str else "/restart",
+        command,
+        params,
         None,
         0,  # SW_HIDE: the elevated console must not pop up
     )
