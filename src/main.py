@@ -249,16 +249,20 @@ def _main_impl() -> None:
         # or when the request arrived with consent (UAC /restart flag, or args
         # typed directly in an already-elevated shell). A silent launch whose
         # args came only from the user-writable temp file is refused.
-        verified = bool(probe_arg) and verify_write_probe(dest_dir, probe_arg)
-        if not verified and "/restart" not in sys.argv and not cli_paths:
-            _show_error(
-                "Access denied",
-                "Write access to the destination could not be verified."
-                "\nOperation refused.",
-            )
-            task_scheduler.delete_args_file(BASENAME)
-            return
-        remove_probe_files(dest_dir)
+        try:
+            verified = bool(probe_arg) and verify_write_probe(dest_dir, probe_arg)
+            if not verified and "/restart" not in sys.argv and not cli_paths:
+                _show_error(
+                    "Access denied",
+                    "Write access to the destination could not be verified."
+                    "\nOperation refused.",
+                )
+                task_scheduler.delete_args_file(BASENAME)
+                return
+        finally:
+            # Never leave probe files behind - also on the refusal path
+            # (verify_write_probe removes the verified one itself).
+            remove_probe_files(dest_dir)
     elif admin_free:
         probe = create_write_probe(dest_dir)
         need = needs_admin or probe is None
@@ -287,6 +291,10 @@ def _main_impl() -> None:
             else:
                 # Cannot prove write access: require an explicit UAC prompt.
                 elevate_force_uac(BASENAME, elevate_args)
+            # elevate() normally never returns (it exits the process). If it
+            # did, no elevated child is running, so this process still owns
+            # the probe and must clean it up.
+            remove_probe_files(dest_dir)
             return
         remove_probe_files(dest_dir)
 

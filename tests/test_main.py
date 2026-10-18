@@ -1,5 +1,6 @@
 """Tests for the runtime-only tool dispatch (portable mode, setup delegation)."""
 
+import os
 import sys
 
 from src import main as mainmod
@@ -116,3 +117,60 @@ class TestConfigFlags:
         monkeypatch.setattr(sys, "argv", ["mklinktool", "/install"])
         mainmod._main_impl()
         assert launched == [[]]
+
+
+class TestProbeCleanup:
+    """Probes must never stay behind, even on refused elevations."""
+
+    @staticmethod
+    def _isolate(monkeypatch, tmp_path, temp_args):
+        TestPortableMode._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(mainmod.task_scheduler, "read_args_file", lambda b: temp_args)
+        monkeypatch.setattr(mainmod.task_scheduler, "delete_args_file", lambda b: None)
+        monkeypatch.setattr(mainmod, "is_admin", lambda: True)
+
+    def test_elevated_verify_failure_removes_all_probes(self, monkeypatch, tmp_path):
+        from src.symlink_ops import create_write_probe
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        src = tmp_path / "src"
+        src.mkdir()
+        # Probe from the parent process, tampered with so verification fails.
+        probe = create_write_probe(str(dest))
+        assert probe is not None
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("tampered")
+        # Stale probe from an earlier crashed run.
+        stale = create_write_probe(str(dest))
+        assert stale is not None
+
+        errors = []
+        monkeypatch.setattr(mainmod, "_show_error", lambda t, m: errors.append(t))
+        self._isolate(monkeypatch, tmp_path, [str(src), str(dest), f"/probe:{probe}"])
+        monkeypatch.setattr(sys, "argv", ["mklinktool"])
+        mainmod._main_impl()
+
+        assert errors == ["Access denied"]
+        assert not os.path.exists(probe)
+        assert not os.path.exists(stale)
+
+    def test_elevated_verified_probe_continues_without_leftovers(
+        self, monkeypatch, tmp_path
+    ):
+        from src.symlink_ops import create_write_probe
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        src = tmp_path / "src"
+        src.mkdir()
+        probe = create_write_probe(str(dest))
+        assert probe is not None
+
+        monkeypatch.setattr(mainmod, "_show_error", lambda t, m: None)
+        self._isolate(monkeypatch, tmp_path, [str(src), str(dest), f"/probe:{probe}"])
+        monkeypatch.setattr(sys, "argv", ["mklinktool"])
+        mainmod.process_links = lambda *a, **k: (0, 0)
+        mainmod._main_impl()
+
+        assert not os.path.exists(probe)

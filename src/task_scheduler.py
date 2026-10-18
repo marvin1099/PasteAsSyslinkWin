@@ -1,15 +1,37 @@
 """Windows Task Scheduler integration for privilege elevation."""
 
+import contextlib
 import os
 import subprocess
 import tempfile
 import winreg
+
+from src.vbs_launcher import write_hidden_launcher
 
 _TASK_CACHE = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree"
 
 
 def _task_name(basename: str) -> str:
     return f"{basename}elevationtask"
+
+
+def _launcher_path(basename: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"{basename}_hidden.vbs")
+
+
+def _ensure_launcher(basename: str, exe_path: str) -> str:
+    """(Re)write the wscript launcher for the task action.
+
+    Rewritten on every run so a temp-file cleaner cannot leave the task
+    pointing at a missing script; a missing launcher would silently turn
+    every elevation into the UAC fallback.
+    """
+    cwd = os.path.dirname(exe_path) or os.getcwd()
+    return write_hidden_launcher(_launcher_path(basename), cwd)
+
+
+def _xml_escape(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def task_exists(basename: str) -> bool:
@@ -36,12 +58,19 @@ def create_task(basename: str, exe_path: str, arguments: str = "") -> bool:
 
     The task has no auto-trigger; it is only started via run_task(). The
     task is marked Hidden so it is not shown in the Task Scheduler UI, and
-    running it does not flash a console window. ``arguments`` is passed
+    the action runs through a VBScript launcher with window style 0, so
+    running it never shows a console window. ``arguments`` is passed
     through verbatim (used for non-frozen launches: the python executable
     plus the script path).
     """
     name = _task_name(basename)
-    args_xml = f"\n      <Arguments>{arguments}</Arguments>" if arguments else ""
+    launcher = _ensure_launcher(basename, exe_path)
+    action_args = f'"{launcher}" "{exe_path}"'
+    if arguments:
+        action_args += f" {arguments}"
+    wscript = os.path.join(
+        os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "wscript.exe"
+    )
     xml = f"""\
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -72,7 +101,8 @@ def create_task(basename: str, exe_path: str, arguments: str = "") -> bool:
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>"{exe_path}"</Command>{args_xml}
+      <Command>{_xml_escape(wscript)}</Command>
+      <Arguments>{_xml_escape(action_args)}</Arguments>
     </Exec>
   </Actions>
 </Task>"""
@@ -92,8 +122,13 @@ def create_task(basename: str, exe_path: str, arguments: str = "") -> bool:
             os.remove(xml_path)
 
 
-def run_task(basename: str) -> bool:
-    """Run the scheduled task (ends any running instance first)."""
+def run_task(basename: str, exe_path: str, arguments: str = "") -> bool:
+    """Run the scheduled task (ends any running instance first).
+
+    The launcher is rewritten first so the action cannot point at a
+    missing script when the temp directory was cleaned.
+    """
+    _ensure_launcher(basename, exe_path)
     name = _task_name(basename)
     subprocess.run(
         ["schtasks", "/End", "/TN", name],
@@ -109,13 +144,15 @@ def run_task(basename: str) -> bool:
 
 
 def delete_task(basename: str) -> bool:
-    """Delete the scheduled task."""
+    """Delete the scheduled task and its wscript launcher."""
     name = _task_name(basename)
     result = subprocess.run(
         ["schtasks", "/Delete", "/F", "/TN", name],
         capture_output=True,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
+    with contextlib.suppress(OSError):
+        os.remove(_launcher_path(basename))
     return result.returncode == 0
 
 

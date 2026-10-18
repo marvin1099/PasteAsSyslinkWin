@@ -12,6 +12,9 @@ APP_EXE_NAME = "mklinktool.exe"
 CLI_SHIM_NAME = "mklinktool.bat"
 LEGACY_EXE_NAME = "mklinktoolw.exe"  # intermediate windowed build
 SETUP_EXE_NAME = "mklinktool-setup.exe"  # standalone installer (install/repair/uninstall)
+# wscript wrapper (written at install time) that runs the uninstall command
+# hidden so Apps & Features never flashes a console window.
+HIDDEN_LAUNCHER_NAME = "mklinktool-hidden.vbs"
 
 
 class Config:

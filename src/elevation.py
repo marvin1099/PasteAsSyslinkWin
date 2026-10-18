@@ -1,5 +1,6 @@
 """Auto-elevation via Task Scheduler with UAC fallback."""
 
+import contextlib
 import ctypes
 import os
 import sys
@@ -51,11 +52,16 @@ def elevate(basename: str, args: list[str]) -> None:
 
             def launch(full_args: list[str]) -> bool:
                 task_scheduler.write_port_file(basename, int(full_args[-1]))
-                return task_scheduler.run_task(basename)
+                if task_scheduler.run_task(basename, command, task_args):
+                    return True
+                # Child never started: nobody will verify/clean the probe.
+                task_scheduler.delete_args_file(basename)
+                _remove_probe_arg(full_args)
+                return False
 
             _exit_process(writeback.run_writeback_parent(launch, args))
         task_scheduler.write_args_file(basename, args)
-        if task_scheduler.run_task(basename):
+        if task_scheduler.run_task(basename, command, task_args):
             _exit_process()
         # Task run failed (e.g. task deleted or disabled): fall back to UAC.
         task_scheduler.delete_args_file(basename)
@@ -119,7 +125,22 @@ def _launch_uac(command: str, command_args: str, args: list[str]) -> bool:
         None,
         0,  # SW_HIDE: the elevated console must not pop up
     )
-    return result > 32
+    if result <= 32:
+        # Declined or failed: no child will verify the write-probe, so
+        # remove it here instead of leaving it in the destination.
+        _remove_probe_arg(args)
+        return False
+    return True
+
+
+def _remove_probe_arg(args: list[str]) -> None:
+    """Delete a /probe: file that no elevated child will clean up."""
+    for arg in args:
+        if arg.startswith("/probe:"):
+            path = arg[len("/probe:") :]
+            if os.path.isfile(path):
+                with contextlib.suppress(OSError):
+                    os.remove(path)
 
 
 def _exit_process(code: int = 0) -> None:
