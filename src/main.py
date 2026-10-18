@@ -100,10 +100,7 @@ def _main_impl() -> None:
 
     if "/help" in sys.argv or "/?" in sys.argv:
         writeback.dbg(f"help-dispatch silent={writeback.is_silent()}")
-        if writeback.is_silent():
-            _show_help_gui()
-        else:
-            print(HELP_TEXT)
+        print(HELP_TEXT)
         return
 
     install_dir = get_install_dir()
@@ -358,22 +355,6 @@ def _run_installer(nogui: bool, nogui_all: bool, *, reinstall: bool = False) -> 
         run_installer_silent(BASENAME, all_users=nogui_all, reinstall=reinstall)
     else:
         run_installer(BASENAME, reinstall=reinstall)
-
-
-def _show_help_gui() -> None:
-    """Show the help text in a dialog when there is no terminal to print to."""
-    import tkinter as tk
-    from tkinter import scrolledtext
-
-    writeback.dbg("help-gui-start")
-    root = tk.Tk()
-    root.title("PasteAsSyslinkWin - Help")
-    text = scrolledtext.ScrolledText(root, width=90, height=26, font=("Consolas", 9))
-    text.insert("1.0", HELP_TEXT)
-    text.configure(state="disabled")
-    text.pack(fill="both", expand=True)
-    root.attributes("-topmost", True)
-    root.mainloop()
 
 
 def _show_error(title: str, msg: str) -> None:

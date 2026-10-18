@@ -247,13 +247,19 @@ def _launched_from_terminal() -> bool:
 
 
 def _hide_console_window() -> bool:
-    """Hide the console window; True when a window existed."""
+    """Release our console so no window stays behind; True when one existed.
+
+    Hides the window first (classic conhost), then detaches: when we are
+    the last client the console - including a Windows Terminal host window
+    we cannot hide directly - closes with it.
+    """
     try:
         kernel32 = ctypes.windll.kernel32
         hwnd = kernel32.GetConsoleWindow()
         if hwnd:
             ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-            return True
+        kernel32.FreeConsole()
+        return bool(hwnd)
     except Exception:
         pass
     return False
@@ -404,10 +410,11 @@ def setup_console_streams(writeback_child: ChildWriteback | None = None) -> None
 
     - Launcher-provided pipes/files are kept untouched (``> out.txt``).
     - When our console is shared with a real terminal shell, keep everything.
-    - Windowed builds (no console) attach to the launching terminal's console
-      via the CLI shim, or go silent when there is none.
+    - Console builds attach to the launching terminal's console via the CLI
+      shim, or go silent when there is none.
     - Any console window we own but no terminal uses it: hide it so nothing
-      pops up (Explorer / task scheduler / UAC launches).
+      pops up (Explorer / task scheduler / UAC launches); we never create
+      a new console.
     """
     state = _std_handle_state()
     terminal = _launched_from_terminal()

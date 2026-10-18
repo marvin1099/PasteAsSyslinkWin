@@ -3,13 +3,14 @@
 import configparser
 import os
 
-# The frozen application is built windowed (no console, no terminal window on
-# Explorer/task/UAC launches). CLI invocation goes through CLI_SHIM_NAME, a
-# batch shim on PATH that calls the exe so shells get blocking behavior,
-# inherited std handles, and exit codes back.
-APP_EXE_NAME = "mklinktoolw.exe"
+# The frozen application is a console build. Flash policy: when a terminal
+# exists the tool attaches to its console; when none exists it must not
+# create a console window (or hides the one Windows makes). CLI invocation
+# goes through CLI_SHIM_NAME (batch shim on PATH) or the exe directly.
+
+APP_EXE_NAME = "mklinktool.exe"
 CLI_SHIM_NAME = "mklinktool.bat"
-LEGACY_EXE_NAME = "mklinktool.exe"  # pre-windowed console build
+LEGACY_EXE_NAME = "mklinktoolw.exe"  # intermediate windowed build
 
 
 class Config:

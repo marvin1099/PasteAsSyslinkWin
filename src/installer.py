@@ -495,10 +495,11 @@ def run_installer_silent(
 
 
 def _write_cli_shim(install_dir: str, command: str, command_args: str = "") -> None:
-    """Write the mklinktool.bat CLI shim so shells get blocking CLI semantics.
+    """Write the mklinktool.bat CLI shim so shells get CLI semantics.
 
-    cmd waits for GUI executables invoked from batch context and inherits
-    std handles, so a direct call gives output, redirection, and exit codes.
+    The shim gives cmd/PowerShell a stable ``mklinktool`` command with
+    inherited std handles and exit codes; the console exe itself blocks
+    shells normally.
     """
     target = f'"{command}"'
     if command_args:
@@ -509,11 +510,18 @@ def _write_cli_shim(install_dir: str, command: str, command_args: str = "") -> N
 
 
 def _copy_script(install_dir: str, basename: str) -> None:
-    """Copy the executable and CLI shim to the installation directory."""
+    """Copy the executable (and its _internal bundle) plus the CLI shim."""
     src = sys.executable
     dst = os.path.join(install_dir, os.path.basename(sys.executable))
     if os.path.normpath(src) != os.path.normpath(dst):
         shutil.copy2(src, dst)
+    # Onedir builds ship dependencies in _internal next to the exe.
+    src_internal = os.path.join(os.path.dirname(src), "_internal")
+    dst_internal = os.path.join(install_dir, "_internal")
+    if os.path.isdir(src_internal) and os.path.normpath(src_internal) != os.path.normpath(
+        dst_internal
+    ):
+        shutil.copytree(src_internal, dst_internal, dirs_exist_ok=True)
     # Upgrade path: drop the exe of the old console build.
     legacy = os.path.join(install_dir, LEGACY_EXE_NAME)
     if (
@@ -557,6 +565,9 @@ def run_uninstaller(
         if os.path.isfile(path):
             with contextlib.suppress(OSError):
                 os.remove(path)
+    internal = os.path.join(install_dir, "_internal")
+    if os.path.isdir(internal):
+        shutil.rmtree(internal, ignore_errors=True)
 
     _schedule_self_delete(install_dir, os.path.join(install_dir, APP_EXE_NAME))
 
@@ -579,7 +590,7 @@ def _schedule_self_delete(install_dir: str, exe_path: str) -> None:
     cmd = (
         f'cmd /c "timeout /t 5 /nobreak >nul '
         f'& del /f /q {exe_quoted} 2>nul '
-        f'& rmdir {dir_quoted} 2>nul"'
+        f'& rmdir /s /q {dir_quoted} 2>nul"'
     )
     CREATE_NO_WINDOW = 0x08000000
     subprocess.Popen(
