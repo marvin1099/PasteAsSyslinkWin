@@ -1,6 +1,6 @@
 [project]
 name = "paste-as-symlink-win"
-version = "0.11"
+version = "0.12"
 description = "Create symlinks by copying and pasting files/folders via CLI or right-click context menu"
 readme = "README.md"
 license = "AGPL-3.0-only"

@@ -23,7 +23,7 @@ def add_uninstall_entry(
         key = winreg.CreateKeyEx(hive, subkey, 0, winreg.KEY_ALL_ACCESS)
         winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "PasteAsSyslinkWin")
         winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, icon)
-        winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "0.11")
+        winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "0.12")
         winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, 5000)
         winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, install_dir)
         winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
