@@ -41,10 +41,16 @@ Probe files are removed automatically after the operation (or by the elevated pr
 
 ### Option 1: Download the prebuilt release (recommended)
 
-Download the `mklinktool` zip from the Releases page of the repository,
-extract it anywhere, and run `mklinktool\mklinktool.exe` — the installer
-GUI opens on first run. The extracted `mklinktool.bat` shim puts `mklinktool`
-on the CLI when the folder is added to PATH (the installer can do that for you).
+Two artifacts are published on the Releases page:
+
+- **`mklinktool-setup.exe`** — the installer. Run it: the wizard installs
+  (or repairs) everything — tool files, context menu, Task Scheduler rule,
+  PATH entry, uninstall entry in Windows Settings. Also available silently:
+  `mklinktool-setup.exe /nogui` (current user), `/noguiall` (all users),
+  `/repair` (re-install keeping your settings), `/uninstall /nogui`.
+- **`mklinktool.zip`** — the portable tool. Extract it anywhere and run
+  `mklinktool\mklinktool.exe` (or `mklinktool.bat` from a shell). No
+  installation: it runs with default settings and never writes a config.
 
 ### Option 2: Build from source
 
@@ -59,19 +65,21 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.10+.
    ```
    build.bat
    ```
-   To build and immediately run the executable (e.g. to open the installer
-   GUI), double-click `build-run.bat` instead.
+   To build and immediately run the installer (opens the setup GUI),
+   double-click `build-run.bat` instead.
 
    If you prefer to run the steps manually (also requires 1.), run them in this order:
    ```
    uv sync
    uv run build.py
    ```
-   (or `uv run build.py --run` to also launch the exe afterwards).
-3. The build is created at `dist\mklinktool\` (executable plus `_internal`
-   bundle, custom icon baked in) with a `mklinktool.bat` shim next to it for
-   use from cmd/PowerShell. Run the exe once, the installer GUI opens on
-   first run.
+   (or `uv run build.py --run` to also launch the setup executable afterwards).
+3. Three artifacts are created in `dist\`:
+   - `mklinktool\` — the tool (executable plus `_internal` bundle) with a
+     `mklinktool.bat` shim next to it for cmd/PowerShell
+   - `mklinktool-setup.exe` — the standalone installer (carries the tool
+     bundle inside, copies it into place)
+   - `mklinktool.zip` — the portable bundle for releases
 
 ## Usage
 
@@ -93,18 +101,27 @@ the `mklinktool` command is available from the command line:
 mklinktool [/flags] C:\source\* C:\destination
 ```
 
-**Commands:**
+**Commands (tool):**
 
 | Command | Description |
 |---------|-------------|
-| `/install`, `/i` | Setup context menu + task scheduler |
-| `/uninstall`, `/u` | Remove context menu + task scheduler |
 | `/resetconfig` | Remove config only |
-| `/reconfigure` | Remove config and re-run setup |
-| `/nogui` | Skip GUI, install to the current user |
-| `/noguiall` | Skip GUI, install for all users |
+| `/reconfigure` | Remove config and open the setup wizard |
+| `/install` | Open the setup wizard (installs/repairs) |
+| `/uninstall` | Delegate uninstall to the setup executable |
 | `/adminfree` | Skip admin-needing operations instead of elevating |
 | `/help`, `/?` | Show this help |
+
+**Commands (mklinktool-setup.exe):**
+
+| Command | Description |
+|---------|-------------|
+| *(no flags)* | Interactive install/repair wizard |
+| `/nogui` | Silent install to the current user |
+| `/noguiall` | Silent install for all users (admin) |
+| `/repair` | Re-copy tool files and re-register, keep settings |
+| `/uninstall` | Uninstall (asks for confirmation) |
+| `/uninstall /nogui` | Uninstall silently |
 
 **Symlink flags:**
 
@@ -152,7 +169,9 @@ Read from clipboard; create file symlinks and folder junctions.
 
 ## Configuration
 
-The tool stores its settings in `mklinktool.conf` alongside the executable:
+The installed tool stores its settings in `mklinktool.conf` alongside the
+executable (written by the installer). The portable build runs with the
+defaults below and never writes a config:
 
 ```ini
 [settings]
@@ -173,9 +192,11 @@ allusers = False
 
 ## Uninstalling
 
-Run `mklinktool /uninstall /nogui` (or use the installed `mklinktool.bat`
-shim) to remove the context menu entries, Task Scheduler rule, PATH entry,
-and config files.
+Use **Settings > Apps > PasteAsSyslinkWin > Uninstall**, or run
+`mklinktool-setup.exe /uninstall` (`/nogui` to skip prompts). This removes
+the context menu entry, Task Scheduler rule, PATH entry, config files, and
+the installed files themselves. `mklinktool /uninstall` delegates to the
+setup executable when it is installed.
 
 ## Project Structure
 
@@ -184,14 +205,15 @@ build.py           Build script (run: uv sync ; then: uv run build.py)
 build.bat          Build only — double-click entry point
 build-run.bat      Build and run — double-click entry point
 src/
-  main.py               Entry point and orchestration
+  main.py               Tool entry point (runtime only - never installs itself)
+  setup_main.py         mklinktool-setup.exe entry (install/repair/uninstall)
   cli.py                Flag parsing
   config.py             INI configuration
   clipboard.py          HDROP + text clipboard via Windows API
   elevation.py          Task Scheduler auto-elevation + UAC fallback
   task_scheduler.py     schtasks create/check/run/delete + args IPC
   context_menu.py       Classic context menu registry entries
-  installer.py          Interactive tkinter install wizard
+  installer.py          Install wizard + installer core (payload copy, repair)
   path_env.py           PATH management via registry
   pathresolver.py       Glob/wildcard path resolution
   symlink_ops.py        mklink execution + conflict dialog
