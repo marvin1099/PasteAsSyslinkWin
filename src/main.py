@@ -6,6 +6,7 @@ by copying files/folders and pasting them as symlinks.
 
 import contextlib
 import os
+import subprocess
 import sys
 
 from src import task_scheduler, writeback
@@ -17,13 +18,11 @@ from src.cli import (
     validate_args,
 )
 from src.clipboard import get_clipboard_paths
-from src.config import Config
-from src.context_menu import add_context_menu
+from src.config import SETUP_EXE_NAME, Config
 from src.elevation import (
     elevate,
     elevate_force_uac,
     get_exe_path,
-    get_launch_command,
     is_admin,
 )
 from src.pathresolver import resolve_paths, to_unc_path
@@ -33,7 +32,6 @@ from src.symlink_ops import (
     remove_probe_files,
     verify_write_probe,
 )
-from src.uninstall_registry import get_installed_location
 
 BASENAME = "mklinktool"
 
@@ -56,21 +54,24 @@ def get_install_dir() -> str:
     for path in candidates:
         if path and os.path.isfile(os.path.join(path, f"{BASENAME}.conf")):
             return path
-    # 3. Fallback: exe/script directory (will trigger installer on first run)
+    # 3. Fallback: exe/script directory (portable mode: no config anywhere)
     return script_dir
 
 
 HELP_TEXT = """PasteAsSyslinkWin - Usage:
   mklinktool [/flags] [paths...]   Create symlinks from clipboard
-  mklinktool /install               Setup context menu + task scheduler
-  mklinktool /uninstall             Remove context menu + task scheduler
   mklinktool /resetconfig            Remove config
   mklinktool /reconfigure            Remove config and re-run setup
-  mklinktool /nogui                 Skip GUI, install to user
-  mklinktool /noguiall              Skip GUI, install for all users
   mklinktool /adminfree             Skip admin-needing ops instead of elevating
   mklinktool /help                  Show this help
   mklinktool /?                     Show this help
+
+Setup (mklinktool-setup.exe):
+  (no flags)          Interactive install/repair wizard
+  /nogui              Silent install (current user)
+  /noguiall           Silent install (all users)
+  /repair             Repair installation (keeps settings)
+  /uninstall [/nogui] Uninstall (add /nogui to skip prompts)
 
 Flags (for symlink creation):
   /f   File symlink (mklink default, no flag needed)
@@ -94,10 +95,6 @@ Clipboard control:
 
 
 def _main_impl() -> None:
-    nogui = "/nogui" in sys.argv
-    nogui_all = "/noguiall" in sys.argv
-    nogui = nogui or nogui_all
-
     if "/help" in sys.argv or "/?" in sys.argv:
         writeback.dbg(f"help-dispatch silent={writeback.is_silent()}")
         print(HELP_TEXT)
@@ -111,19 +108,15 @@ def _main_impl() -> None:
         print(f"Config removed: {config.path}")
         if "/resetconfig" in sys.argv:
             return
-
-    installed_loc = get_installed_location()
-    exe_here = os.path.normcase(os.path.normpath(os.path.dirname(get_exe_path())))
-    if installed_loc and os.path.normcase(os.path.normpath(installed_loc)) == exe_here:
-        # Running from the install location: proceed only when config exists.
-        if not config.exists():
-            _run_installer(nogui, nogui_all)
-            return
-    else:
-        _run_installer(nogui, nogui_all, reinstall=bool(installed_loc))
+        _launch_setup([])
         return
 
-    config.load()
+    if config.exists():
+        config.load()
+    else:
+        # No installation anywhere: portable mode - run with the defaults in
+        # memory, never write a config and never open the setup wizard.
+        writeback.dbg("config-missing portable-defaults")
 
     _skip_flags = {
         "/restart",
@@ -159,28 +152,16 @@ def _main_impl() -> None:
 
     install_mode = parsed["install_mode"]
     if install_mode is True:
-        from src.installer import run_uninstaller
-
+        # Uninstall belongs to the setup executable now - delegate to it.
         task_scheduler.delete_args_file(BASENAME)
-        run_uninstaller(BASENAME, install_dir, config.task, quiet=nogui)
+        quiet = ["/nogui"] if "/nogui" in sys.argv else []
+        _launch_setup(["/uninstall", *quiet])
         return
 
     if install_mode is False:
+        # /install: open the setup wizard (it re-registers everything).
         task_scheduler.delete_args_file(BASENAME)
-        if config.task:
-            task_command, task_args = get_launch_command()
-            task_scheduler.create_task(BASENAME, task_command, task_args)
-
-        root_args = (
-            (f"{config.script_default_file_opts} {config.script_default_folder_opts}")
-            .strip()
-            .split()
-        )
-        root_parsed = parse_flags(root_args)
-
-        f_opts = build_file_flags(root_parsed)
-        d_opts = build_folder_flags(root_parsed)
-        add_context_menu(get_exe_path(), f_opts, d_opts)
+        _launch_setup([])
         return
 
     admin_file_flags = parse_admin_opts(config.admin_file_opts)
@@ -347,14 +328,33 @@ def _check_needs_admin(
     )
 
 
-def _run_installer(nogui: bool, nogui_all: bool, *, reinstall: bool = False) -> None:
-    """Run the installer, GUI or silent depending on the launch flags."""
-    from src.installer import run_installer, run_installer_silent
+def _find_setup_exe(install_dir: str) -> str | None:
+    """Locate mklinktool-setup.exe next to the tool or in a known location."""
+    candidates = [
+        os.path.join(install_dir, SETUP_EXE_NAME),
+        os.path.join(os.path.dirname(get_exe_path()), SETUP_EXE_NAME),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), BASENAME, SETUP_EXE_NAME),
+        os.path.join(os.environ.get("PROGRAMFILES", ""), BASENAME, SETUP_EXE_NAME),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
 
-    if nogui:
-        run_installer_silent(BASENAME, all_users=nogui_all, reinstall=reinstall)
-    else:
-        run_installer(BASENAME, reinstall=reinstall)
+
+def _launch_setup(args: list[str]) -> bool:
+    """Start the setup executable with ``args``; False when it is missing.
+
+    The tool never installs/uninstalls itself - every install action is
+    delegated to mklinktool-setup.exe (or reported as unavailable).
+    """
+    setup = _find_setup_exe(get_install_dir())
+    if not setup:
+        print("mklinktool-setup.exe not found - download it from the Releases page.")
+        return False
+    subprocess.Popen([setup, *args])
+    print(f"Launched: {setup}" + (f" {' '.join(args)}" if args else ""))
+    return True
 
 
 def _show_error(title: str, msg: str) -> None:
