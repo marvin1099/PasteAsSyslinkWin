@@ -1,4 +1,10 @@
-"""Interactive installation wizard with proper Windows install conventions."""
+"""Installation wizard and installer core (used only by mklinktool-setup.exe).
+
+The setup executable embeds the tool bundle as a payload and copies it into
+the install location; it also copies itself next to the tool so uninstall
+and repair stay available offline. The tool (mklinktool.exe) never runs
+any of this - it only delegates to the setup executable.
+"""
 
 import contextlib
 import os
@@ -6,11 +12,21 @@ import shutil
 import sys
 
 from src import task_scheduler
-from src.config import APP_EXE_NAME, CLI_SHIM_NAME, LEGACY_EXE_NAME, Config
+from src.config import (
+    APP_EXE_NAME,
+    CLI_SHIM_NAME,
+    LEGACY_EXE_NAME,
+    SETUP_EXE_NAME,
+    Config,
+)
 from src.context_menu import add_context_menu
 from src.elevation import elevate_force_uac, get_exe_path, get_launch_command, is_admin
 from src.path_env import add_to_path, remove_from_path
-from src.uninstall_registry import add_uninstall_entry, remove_uninstall_entry
+from src.uninstall_registry import (
+    add_uninstall_entry,
+    get_installed_location,
+    remove_uninstall_entry,
+)
 
 tk = None
 filedialog = None
@@ -58,6 +74,7 @@ class _InstallerDialog:
         *,
         all_users: bool = False,
         reinstall_mode: bool = False,
+        initial_cfg: dict | None = None,
     ):
         _ensure_tk()
         self.basename = basename
@@ -87,6 +104,35 @@ class _InstallerDialog:
         self.root.attributes("-topmost", True)
         self.scope_var.trace_add("write", lambda *_: self._on_scope_change())
         self._on_scope_change()
+        if initial_cfg:
+            self._apply_initial(initial_cfg)
+
+    def _apply_initial(self, cfg: dict) -> None:
+        """Pre-fill the wizard from an existing installation's settings."""
+        # Scope first: its trace resets path/task/admin-free to scope defaults.
+        self.scope_var.set("all" if cfg.get("all_users") else "user")
+        if cfg.get("install_dir"):
+            self.path_var.set(cfg["install_dir"])
+        if "use_task" in cfg:
+            self.task_var.set(bool(cfg["use_task"]))
+        if "admin_free" in cfg:
+            self.admin_free_var.set(bool(cfg["admin_free"]))
+        if "add_context" in cfg:
+            self.context_var.set(bool(cfg["add_context"]))
+        if "add_to_path" in cfg:
+            self.add_to_path_var.set(bool(cfg["add_to_path"]))
+        if "wildcard_loops" in cfg:
+            self.wildcard_var.set(bool(cfg["wildcard_loops"]))
+        if cfg.get("file_opts"):
+            self.file_opt_var.set(cfg["file_opts"])
+        if cfg.get("folder_opts"):
+            self.folder_opt_var.set(cfg["folder_opts"])
+        admin_file = cfg.get("admin_file_opts", "").split()
+        admin_folder = cfg.get("admin_folder_opts", "").split()
+        self.admin_file_symlink_var.set("/f" in admin_file)
+        self.admin_file_hardlink_var.set("/h" in admin_file)
+        self.admin_folder_symlink_var.set("/d" in admin_folder)
+        self.admin_folder_junction_var.set("/j" in admin_folder)
 
     def _build_ui(self):
         pad = {"padx": 10, "pady": 3}
@@ -366,7 +412,7 @@ def _do_install(basename: str, cfg: dict) -> None:
     install_dir = cfg["install_dir"]
     all_users = cfg["all_users"]
     # Keep a silent install silent across the elevated relaunch.
-    elev_flags = [a for a in sys.argv[1:] if a in ("/nogui", "/noguiall")]
+    elev_flags = [a for a in sys.argv[1:] if a in ("/nogui", "/noguiall", "/repair")]
 
     if all_users and not is_admin():
         elevate_force_uac(basename, elev_flags)
@@ -413,15 +459,33 @@ def _do_install(basename: str, cfg: dict) -> None:
 
     frozen = getattr(sys, "frozen", False)
     if frozen:
-        _copy_script(install_dir, basename)
-        script_dest = os.path.join(install_dir, os.path.basename(sys.executable))
+        payload = _payload_dir()
+        if payload is None:
+            print("ERROR: installer payload missing - mklinktool-setup.exe is broken.")
+            sys.exit(1)
+        _copy_payload(install_dir, basename, payload)
+        script_dest = os.path.join(install_dir, APP_EXE_NAME)
         task_command, task_args = script_dest, ""
-        cmd_prefix = f'"{script_dest}"'
+        # Keep the setup executable next to the tool so uninstall/repair stay
+        # available after the download is gone; Apps & Features points at it.
+        setup_src = os.path.abspath(sys.executable)
+        setup_dst = os.path.join(install_dir, SETUP_EXE_NAME)
+        if os.path.normcase(setup_src) != os.path.normcase(setup_dst):
+            shutil.copy2(setup_src, setup_dst)
+        cmd_prefix = f'"{setup_dst}"'
     else:
-        # Source run: register the script itself; do not copy python.exe.
-        script_dest = get_exe_path()
-        task_command, task_args = get_launch_command()
-        cmd_prefix = f'"{task_command}" {task_args}'.strip()
+        # Source run: register the tool script (src/main.py), not the setup
+        # entry point that is executing right now.
+        entry = os.path.abspath(get_exe_path())
+        tool_script = os.path.join(os.path.dirname(entry), "main.py")
+        if os.path.isfile(tool_script):
+            script_dest = tool_script
+            task_command, task_args = sys.executable, f'"{tool_script}"'
+        else:
+            script_dest = entry
+            task_command, task_args = get_launch_command()
+        # Apps & Features must invoke the setup entry (install/uninstall/repair).
+        cmd_prefix = f'"{sys.executable}" "{entry}"'
         _write_cli_shim(install_dir, task_command, task_args)
 
     if cfg["add_context"]:
@@ -438,13 +502,16 @@ def _do_install(basename: str, cfg: dict) -> None:
 
 def run_installer(basename: str, *, reinstall: bool = False) -> None:
     """Run the single-step interactive installation wizard."""
-    dialog = _InstallerDialog(basename, reinstall_mode=reinstall)
+    initial_cfg = None
+    if reinstall:
+        existing = _existing_install(basename)
+        if existing:
+            initial_cfg = _config_as_cfg(existing, basename)
+    dialog = _InstallerDialog(basename, reinstall_mode=reinstall, initial_cfg=initial_cfg)
     cfg = dialog.show()
 
     if dialog.uninstall_requested:
-        from src.uninstall_registry import get_installed_location
-
-        installed_loc = get_installed_location()
+        installed_loc = _existing_install(basename)
         if installed_loc:
             cfg_inst = Config(installed_loc, basename)
             cfg_inst.load()
@@ -471,10 +538,13 @@ def run_installer(basename: str, *, reinstall: bool = False) -> None:
     sys.exit(0)
 
 
-def run_installer_silent(
-    basename: str, *, all_users: bool = True, reinstall: bool = False
-) -> None:
-    """Silent install with defaults. No GUI."""
+def run_installer_silent(basename: str, *, all_users: bool = True) -> None:
+    """Silent install with defaults. No GUI.
+
+    Settings that already exist at the target location are preserved so a
+    silent upgrade or repair never resets the user's configuration. The
+    scope stays whatever the caller asked for (/nogui vs /noguiall).
+    """
     cfg = {
         "install_dir": _default_allusers_path(basename)
         if all_users
@@ -490,7 +560,19 @@ def run_installer_silent(
         "admin_file_opts": "/f /h",
         "admin_folder_opts": "/d",
     }
+    existing = Config(cfg["install_dir"], basename)
+    if existing.load():
+        cfg.update(
+            use_task=existing.task,
+            admin_free=existing.admin_free,
+            wildcard_loops=existing.wildcard_loops,
+            file_opts=existing.script_default_file_opts,
+            folder_opts=existing.script_default_folder_opts,
+            admin_file_opts=existing.admin_file_opts,
+            admin_folder_opts=existing.admin_folder_opts,
+        )
     _do_install(basename, cfg)
+    print(f"Installation complete! {cfg['install_dir']}")
     sys.exit(0)
 
 
@@ -509,28 +591,94 @@ def _write_cli_shim(install_dir: str, command: str, command_args: str = "") -> N
         f.write(content)
 
 
-def _copy_script(install_dir: str, basename: str) -> None:
-    """Copy the executable (and its _internal bundle) plus the CLI shim."""
-    src = sys.executable
-    dst = os.path.join(install_dir, os.path.basename(sys.executable))
-    if os.path.normpath(src) != os.path.normpath(dst):
-        shutil.copy2(src, dst)
-    # Onedir builds ship dependencies in _internal next to the exe.
-    src_internal = os.path.join(os.path.dirname(src), "_internal")
-    dst_internal = os.path.join(install_dir, "_internal")
-    if os.path.isdir(src_internal) and os.path.normpath(src_internal) != os.path.normpath(
-        dst_internal
-    ):
-        shutil.copytree(src_internal, dst_internal, dirs_exist_ok=True)
-    # Upgrade path: drop the exe of the old console build.
+def _payload_dir() -> str | None:
+    """Directory of the embedded tool payload inside the frozen setup exe.
+
+    Returns None for source runs (nothing embedded) and when the payload
+    is missing (broken setup executable - callers must refuse to install).
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    payload = os.path.join(getattr(sys, "_MEIPASS", ""), "payload")
+    return payload if os.path.isdir(payload) else None
+
+
+def _copy_payload(install_dir: str, basename: str, payload: str) -> None:
+    """Copy the embedded tool bundle (exe + _internal) and refresh the shim."""
+    src_n = os.path.normcase(os.path.normpath(payload))
+    dst_n = os.path.normcase(os.path.normpath(install_dir))
+    if src_n != dst_n:
+        shutil.copytree(payload, install_dir, dirs_exist_ok=True)
+    # Upgrade path: drop the exe of the intermediate windowed build.
     legacy = os.path.join(install_dir, LEGACY_EXE_NAME)
-    if (
-        os.path.normcase(os.path.normpath(legacy)) != os.path.normcase(os.path.normpath(dst))
-        and os.path.isfile(legacy)
-    ):
+    if os.path.isfile(legacy):
         with contextlib.suppress(OSError):
             os.remove(legacy)
-    _write_cli_shim(install_dir, dst)
+    _write_cli_shim(install_dir, os.path.join(install_dir, APP_EXE_NAME))
+
+
+def _existing_install(basename: str) -> str | None:
+    """Locate an existing installation: registry first, then default folders.
+
+    The registry location wins when the folder exists (even if the config
+    file was deleted - repairing a broken install must still find it).
+    """
+    loc = get_installed_location()
+    if loc and os.path.isdir(loc):
+        return loc
+    for path in (_default_user_path(basename), _default_allusers_path(basename)):
+        if os.path.isfile(os.path.join(path, f"{basename}.conf")):
+            return path
+    return None
+
+
+def _config_as_cfg(install_dir: str, basename: str) -> dict | None:
+    """Translate an installed config into wizard cfg values (None if absent)."""
+    config = Config(install_dir, basename)
+    if not config.load():
+        return None
+    return {
+        "install_dir": install_dir,
+        "all_users": config.all_users,
+        "use_task": config.task,
+        "admin_free": config.admin_free,
+        "add_context": True,
+        "add_to_path": True,
+        "wildcard_loops": config.wildcard_loops,
+        "file_opts": config.script_default_file_opts,
+        "folder_opts": config.script_default_folder_opts,
+        "admin_file_opts": config.admin_file_opts,
+        "admin_folder_opts": config.admin_folder_opts,
+    }
+
+
+def run_repair(basename: str) -> None:
+    """Repair an installation: re-copy tool files, re-register, keep settings."""
+    install_dir = _existing_install(basename)
+    if not install_dir:
+        print("No installation found to repair. Run mklinktool-setup.exe to install.")
+        return
+    cfg = _config_as_cfg(install_dir, basename)
+    if cfg is None:
+        # Config lost but files present: rebuild it from the detected scope.
+        all_users = os.path.normcase(install_dir) == os.path.normcase(
+            _default_allusers_path(basename)
+        )
+        cfg = {
+            "install_dir": install_dir,
+            "all_users": all_users,
+            "use_task": all_users,
+            "admin_free": not all_users,
+            "add_context": True,
+            "add_to_path": True,
+            "wildcard_loops": False,
+            "file_opts": "/f",
+            "folder_opts": "/j",
+            "admin_file_opts": "/f /h",
+            "admin_folder_opts": "/d",
+        }
+    _do_install(basename, cfg)
+    print(f"Repair complete! {install_dir}")
 
 
 def run_uninstaller(
@@ -557,10 +705,10 @@ def run_uninstaller(
     config = Config(install_dir, basename)
     config.delete()
 
-    # The installed exe may be this very process (Apps & Features flow): the
+    # The setup exe may be this very process (Apps & Features flow): the
     # immediate remove then fails silently and the scheduled cleanup below
     # deletes it once the process has exited.
-    for name in (f"{basename}.ico", CLI_SHIM_NAME, LEGACY_EXE_NAME, APP_EXE_NAME):
+    for name in (f"{basename}.ico", CLI_SHIM_NAME, LEGACY_EXE_NAME, APP_EXE_NAME, SETUP_EXE_NAME):
         path = os.path.join(install_dir, name)
         if os.path.isfile(path):
             with contextlib.suppress(OSError):
@@ -569,7 +717,13 @@ def run_uninstaller(
     if os.path.isdir(internal):
         shutil.rmtree(internal, ignore_errors=True)
 
-    _schedule_self_delete(install_dir, os.path.join(install_dir, APP_EXE_NAME))
+    _schedule_self_delete(
+        install_dir,
+        [
+            os.path.join(install_dir, APP_EXE_NAME),
+            os.path.join(install_dir, SETUP_EXE_NAME),
+        ],
+    )
 
     if quiet:
         print("Uninstallation complete!")
@@ -577,21 +731,18 @@ def run_uninstaller(
         _topmost_msgbox("showinfo", "PasteAsSyslinkWin", "Uninstallation complete!")
 
 
-def _schedule_self_delete(install_dir: str, exe_path: str) -> None:
-    """Spawn a detached cleanup process that deletes the exe and install dir after exit.
+def _schedule_self_delete(install_dir: str, exe_paths: list[str]) -> None:
+    """Spawn a detached cleanup process that deletes the exes and install dir after exit.
 
     The steps are chained with ``&`` (not ``&&``) so the directory removal is
-    attempted even when the exe is already gone.
+    attempted even when a file is already gone. Waiting a few seconds lets
+    the running setup process exit before its own file is deleted.
     """
     import subprocess
 
-    exe_quoted = f'"{exe_path}"'
+    dels = " ".join(f'& del /f /q "{p}" 2>nul' for p in exe_paths)
     dir_quoted = f'"{install_dir}"'
-    cmd = (
-        f'cmd /c "timeout /t 5 /nobreak >nul '
-        f'& del /f /q {exe_quoted} 2>nul '
-        f'& rmdir /s /q {dir_quoted} 2>nul"'
-    )
+    cmd = f'cmd /c "timeout /t 5 /nobreak >nul {dels} & rmdir /s /q {dir_quoted} 2>nul"'
     CREATE_NO_WINDOW = 0x08000000
     subprocess.Popen(
         cmd,

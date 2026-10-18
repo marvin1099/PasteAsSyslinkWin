@@ -11,6 +11,7 @@ import os
 APP_EXE_NAME = "mklinktool.exe"
 CLI_SHIM_NAME = "mklinktool.bat"
 LEGACY_EXE_NAME = "mklinktoolw.exe"  # intermediate windowed build
+SETUP_EXE_NAME = "mklinktool-setup.exe"  # standalone installer (install/repair/uninstall)
 
 
 class Config:
