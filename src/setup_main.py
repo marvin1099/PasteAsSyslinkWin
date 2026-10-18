@@ -71,10 +71,13 @@ def _main_impl() -> None:
 
     if mode == "uninstall":
         from src.config import Config
-        from src.installer import _existing_install
+        from src.installer import _existing_install, _installed_from_self
 
         quiet = "/nogui" in sys.argv
-        install_dir = _existing_install(BASENAME)
+        # Entries can exist in both hives at once; the registry cannot know
+        # which one invoked us, but this setup exe runs from inside its own
+        # installation - that decides.
+        install_dir = _installed_from_self(BASENAME) or _existing_install(BASENAME)
         if not install_dir:
             print("No installation found to uninstall.")
             return
@@ -95,9 +98,10 @@ def _main_impl() -> None:
         run_installer_silent(BASENAME, all_users=True)
         return
 
-    from src.installer import _existing_install
+    from src.installer import _existing_install, _installed_from_self
 
-    run_installer(BASENAME, reinstall=_existing_install(BASENAME) is not None)
+    reinstall = (_installed_from_self(BASENAME) or _existing_install(BASENAME)) is not None
+    run_installer(BASENAME, reinstall=reinstall)
 
 
 def main() -> None:

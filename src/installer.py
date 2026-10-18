@@ -15,6 +15,7 @@ from src import task_scheduler
 from src.config import (
     APP_EXE_NAME,
     CLI_SHIM_NAME,
+    HIDDEN_LAUNCHER_NAME,
     LEGACY_EXE_NAME,
     SETUP_EXE_NAME,
     Config,
@@ -27,6 +28,7 @@ from src.uninstall_registry import (
     get_installed_location,
     remove_uninstall_entry,
 )
+from src.vbs_launcher import write_hidden_launcher
 
 tk = None
 filedialog = None
@@ -488,6 +490,13 @@ def _do_install(basename: str, cfg: dict) -> None:
         cmd_prefix = f'"{sys.executable}" "{entry}"'
         _write_cli_shim(install_dir, task_command, task_args)
 
+    # Apps & Features runs the uninstall string through wscript with window
+    # style 0, so the console setup process never flashes a window there.
+    launcher = write_hidden_launcher(
+        os.path.join(install_dir, HIDDEN_LAUNCHER_NAME), install_dir
+    )
+    cmd_prefix = f'wscript.exe "{launcher}" {cmd_prefix}'
+
     if cfg["add_context"]:
         add_context_menu(script_dest, file_opts, folder_opts)
 
@@ -511,7 +520,7 @@ def run_installer(basename: str, *, reinstall: bool = False) -> None:
     cfg = dialog.show()
 
     if dialog.uninstall_requested:
-        installed_loc = _existing_install(basename)
+        installed_loc = _installed_from_self(basename) or _existing_install(basename)
         if installed_loc:
             cfg_inst = Config(installed_loc, basename)
             cfg_inst.load()
@@ -617,6 +626,24 @@ def _copy_payload(install_dir: str, basename: str, payload: str) -> None:
     _write_cli_shim(install_dir, os.path.join(install_dir, APP_EXE_NAME))
 
 
+def _installed_from_self(basename: str) -> str | None:
+    """The installation this frozen setup executable lives inside.
+
+    With uninstall entries in both hives at once, the registry lookup
+    cannot know which entry invoked us - but the setup executable copied
+    into an installation always runs from that installation's folder, so
+    it decides over the registry. Source runs return None.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    here = os.path.dirname(os.path.abspath(sys.executable))
+    if os.path.isfile(os.path.join(here, f"{basename}.conf")) or os.path.isfile(
+        os.path.join(here, APP_EXE_NAME)
+    ):
+        return here
+    return None
+
+
 def _existing_install(basename: str) -> str | None:
     """Locate an existing installation: registry first, then default folders.
 
@@ -654,7 +681,7 @@ def _config_as_cfg(install_dir: str, basename: str) -> dict | None:
 
 def run_repair(basename: str) -> None:
     """Repair an installation: re-copy tool files, re-register, keep settings."""
-    install_dir = _existing_install(basename)
+    install_dir = _installed_from_self(basename) or _existing_install(basename)
     if not install_dir:
         print("No installation found to repair. Run mklinktool-setup.exe to install.")
         return
@@ -688,7 +715,23 @@ def run_uninstaller(
 
     With ``quiet`` no GUI is shown (used by QuietUninstallString and the
     CLI ``/uninstall /nogui``); a message is printed instead when possible.
+
+    An all-users installation touches Program Files and HKLM: from a
+    medium-integrity shell that fails halfway (e.g. deleting the config),
+    so the uninstall relaunches through UAC exactly like the installer
+    does instead of leaving a half-removed installation behind.
     """
+    config = Config(install_dir, basename)
+    if not config.load():
+        config.all_users = os.path.normcase(install_dir) == os.path.normcase(
+            _default_allusers_path(basename)
+        )
+
+    if not is_admin() and config.all_users:
+        elev_flags = ["/uninstall"] + (["/nogui"] if quiet else [])
+        elevate_force_uac(basename, elev_flags)
+        return
+
     if use_task:
         task_scheduler.delete_task(basename)
 
@@ -702,13 +745,23 @@ def run_uninstaller(
     remove_uninstall_entry(all_users=False)
     remove_uninstall_entry(all_users=True)
 
-    config = Config(install_dir, basename)
-    config.delete()
+    try:
+        config.delete()
+    except OSError as exc:
+        # Never abort mid-uninstall: everything else still gets removed.
+        print(f"Warning: could not remove {config.path}: {exc}")
 
     # The setup exe may be this very process (Apps & Features flow): the
     # immediate remove then fails silently and the scheduled cleanup below
     # deletes it once the process has exited.
-    for name in (f"{basename}.ico", CLI_SHIM_NAME, LEGACY_EXE_NAME, APP_EXE_NAME, SETUP_EXE_NAME):
+    for name in (
+        f"{basename}.ico",
+        CLI_SHIM_NAME,
+        HIDDEN_LAUNCHER_NAME,
+        LEGACY_EXE_NAME,
+        APP_EXE_NAME,
+        SETUP_EXE_NAME,
+    ):
         path = os.path.join(install_dir, name)
         if os.path.isfile(path):
             with contextlib.suppress(OSError):
@@ -749,4 +802,7 @@ def _schedule_self_delete(install_dir: str, exe_paths: list[str]) -> None:
         shell=True,
         creationflags=CREATE_NO_WINDOW,
         close_fds=True,
+        # The hidden VBS launcher sets our cwd into the install dir, and a
+        # cmd whose own cwd is the target directory cannot rmdir it.
+        cwd=os.environ.get("SYSTEMROOT") or None,
     )
