@@ -1,0 +1,8 @@
+# Normalize line endings for every tool that touches this repo
+# (editors, builder AIs, git on Windows or WSL) - see prompt.md handoff:
+# no attributes file meant LF/CRLF churn between platforms.
+* text=auto
+*.bat text eol=crlf
+*.vbs text eol=crlf
+*.exe binary
+*.ico binary
