@@ -41,16 +41,18 @@ Probe files are removed automatically after the operation (or by the elevated pr
 
 ### Option 1: Download the prebuilt release (recommended)
 
-Two artifacts are published on the Releases page:
+Download **`mklinktool-setup.exe`** from the Releases page and run it: the
+wizard installs (or repairs) everything — tool files, context menu, Task
+Scheduler rule, PATH entry, uninstall entry in Windows Settings. Also
+available silently: `mklinktool-setup.exe /nogui` (current user),
+`/noguiall` (all users), `/repair` (re-install keeping your settings),
+`/uninstall /nogui`.
 
-- **`mklinktool-setup.exe`** — the installer. Run it: the wizard installs
-  (or repairs) everything — tool files, context menu, Task Scheduler rule,
-  PATH entry, uninstall entry in Windows Settings. Also available silently:
-  `mklinktool-setup.exe /nogui` (current user), `/noguiall` (all users),
-  `/repair` (re-install keeping your settings), `/uninstall /nogui`.
-- **`mklinktool.zip`** — the portable tool. Extract it anywhere and run
-  `mklinktool\mklinktool.exe` (or `mklinktool.bat` from a shell). No
-  installation: it runs with default settings and never writes a config.
+Only the installer is published — the build also produces a portable
+`mklinktool.zip`, but the tool needs the registrations (context menu,
+PATH, Task Scheduler, config) that only the installer sets up, so a
+standalone zip would not be usable effectively. It can be built from
+source below if you want to try it.
 
 ### Option 2: Build from source
 

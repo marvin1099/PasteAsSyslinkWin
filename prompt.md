@@ -8,11 +8,11 @@ coding guide; you do not edit code yourself.
 ## Roles
 
 - **Builder AI**: reads/edits `src/`, `tests/`, docs; runs checks, builds
-  and end-to-end tests; can create commits and push to the two remotes
-  when asked. It **cannot publish releases** — no API token, no account
-  access.
-- **You (git handler)**: review the builder's diffs, decide commits/pushes
-  you initiate, manage tags, publish releases (assets, notes), hold tokens
+  and end-to-end tests. It does **not** do git work: it leaves its changes
+  in the worktree together with a verification report, and it has no
+  account access (cannot push, cannot publish releases).
+- **You (git handler)**: all git is yours — review the builder's diffs,
+  commit, push to both remotes, manage tags, publish releases, hold tokens
   and mirrors. Never change source files — route code work back to the
   builder.
 
@@ -24,8 +24,9 @@ coding guide; you do not edit code yourself.
 - Commit identity configured: `marvin1099 <marvin1099@noreply.codeberg.org>`.
 - Auth is SSH only — no HTTPS credentials are stored, so **releases must be
   published through your own account/token**.
-- Current version: `0.11` (installer/tool split). Tags exist for
-  v0.1, v0.6, v0.9, v0.10; release the next state as `v0.11`.
+- Current version: `0.11` (installer/tool split); `v0.11` is already tagged
+  and pushed to both remotes but **not yet released** — your first task may
+  simply be publishing that release.
 
 ## What the builder can do
 
@@ -34,29 +35,28 @@ coding guide; you do not edit code yourself.
   - tests: `.venv\Scripts\python.exe -m pytest tests/ -q` → **128 passed**
   - lint: `.venv\Scripts\ruff.exe check src/ tests/ build.py` → clean
   - build: `uv run build.py` (timeout 300000 ms) → three artifacts
-- **Build artifacts** (all in `dist\`):
+- **Build artifacts** (all in `dist\`; only the setup exe is ever published):
   | artifact | meaning |
   |---|---|
-  | `mklinktool-setup.exe` | standalone installer (onefile, ~24 MB, carries the tool payload; install / repair / uninstall) |
-  | `mklinktool.zip` | portable bundle (`mklinktool\` + `mklinktool.bat`, ~12 MB) |
+  | `mklinktool-setup.exe` | standalone installer (onefile, ~24 MB, carries the tool payload; install / repair / uninstall) — **the release asset** |
+  | `mklinktool.zip` | portable bundle — local build output only, never uploaded: the tool needs registration (context menu, PATH, Task Scheduler, config) that only the installer sets up |
   | `mklinktool\` | the tool onedir bundle (build output, not shipped raw) |
 - **Run full E2E on this Windows machine**: silent install/repair/uninstall
   via the setup exe, registry/PATH/context-menu checks, elevated runs (UAC
   disabled here), console-flash window harness, portable-zip runs. Machine
   state is always restored to an installed configuration afterwards.
-- **Commit and push** small logical commits to both remotes when asked;
-  tag releases (`git tag vX.Y`, push to both remotes) when asked.
 
 ## Handoff to you
 
-- What you receive: changes in the worktree (or already-pushed commits) plus
-  the builder's report: test count, lint status, build result, E2E results.
+- What you receive: changes in the worktree plus the builder's report:
+  test count, lint status, build result, E2E results.
 - Gate before you push or publish: builder reported **128 passed / lint
   clean / build OK** (or newer numbers with the same meaning).
-- What you do: review the diff, commit/push per your judgment if the
-  builder hasn't, tag `vX.Y` on both remotes, then **create the release**
-  (Codeberg primary; GitHub mirror optional) attaching
-  `mklinktool-setup.exe` and `mklinktool.zip`, with release notes covering
-  install/repair/uninstall usage.
+- What you do (git is entirely yours): review the diff, commit it in small
+  logical commits, push `main` to **both** `origin` and `github`, tag
+  `vX.Y` and push the tag to both remotes, then **create the release**
+  (Codeberg primary; GitHub mirror optional) attaching **only
+  `mklinktool-setup.exe`**, with release notes covering install/repair/
+  uninstall usage. Never upload the portable zip.
 - Never commit tokens, credentials or `.env` files. Tokens stay on your
   side — they are never handed to the builder session.
